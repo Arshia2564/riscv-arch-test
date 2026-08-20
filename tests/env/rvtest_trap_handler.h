@@ -117,6 +117,13 @@
 #define DEFAULT_TEMP_REG x4                      // general temporary for test macros
 #define DEFAULT_LINK_REG x5                      // link register for test macros (jal return address)
 
+// Some implementations expose mtime MMIO but do not implement the time CSR.
+// The emulation path currently supports RV64 systems with direct access to a
+// 64-bit mtime register.
+#if (UDB_MXLEN == 64) && !defined(UDB_TIME_CSR_IMPLEMENTED) && defined(RVMODEL_MTIME_ADDRESS)
+  #define RVTEST_TIME_CSR_EMULATION
+#endif
+
 
 #ifndef T1
   #define T1      x6                             // handler temporary 1
@@ -257,7 +264,11 @@
 #define tramp_sz        ((actual_tramp_sz+4) & -8)                       // round up to dword alignment
 #define ptr_sv_sz       (16*8)                                           // 16 pointer slots × 8 bytes each
 #define reg_sv_sz       ( 8*REGWIDTH)                                    // 8 handler temp regs saved
-#define model_sv_sz     ( 8*REGWIDTH)                                    // 8 slots for RVMODEL macro scratch
+#ifdef RVTEST_TIME_CSR_EMULATION
+  #define model_sv_sz   (11*REGWIDTH)                                    // 8 scratch + 3 time-emulation slots
+#else
+  #define model_sv_sz   ( 8*REGWIDTH)                                    // 8 slots for RVMODEL macro scratch
+#endif
 #define sv_area_sz      (tramp_sz + ptr_sv_sz + reg_sv_sz + model_sv_sz) // total save area per mode
 #define int_hndlr_tblsz (UDB_MXLEN*2*WDBYTSZ)                                // size of combined int+exception dispatch tables
 
@@ -316,6 +327,14 @@
 // neither can be active while RVTEST_GOTO_LOWER_MODE executes.
 #define goto_lower_sv_off (rvmodel_sv_off+4*(REGWIDTH)) // GOTO_LOWER_MODE T1/T2/T4/T3 save slots
 
+#ifdef RVTEST_TIME_CSR_EMULATION
+  // Requested counter-enable values. These preserve TM when hardware
+  // hardwires the bit to zero because the time CSR is absent.
+  #define mcounteren_shadow_off       (rvmodel_sv_off+8*(REGWIDTH))
+  #define scounteren_shadow_off       (rvmodel_sv_off+9*(REGWIDTH))
+  // Set after an invisible time CSR emulation changes mstatus.MPIE.
+  #define time_emulation_pending_off  (rvmodel_sv_off+10*(REGWIDTH))
+#endif
 //==============================================================================
 // SECTION 8: INSTANTIATE_MODE_MACRO
 //
@@ -838,7 +857,62 @@
         #define  RVMODEL_CLR_VEXT_INT    RVTEST_DFLT_INT_HNDLR  // VS-mode ext interrupt clear: abort
 #endif
 
+// Counter-enable accessors. When time CSR emulation is active, update both
+// the physical CSR and its requested-value shadow. Otherwise, use the CSR
+// directly. ra/a0/a1/a2 are reserved by the privileged-test framework.
+.macro RVTEST_MCOUNTEREN_WRITE RS
+#ifdef RVTEST_TIME_CSR_EMULATION
+        mv      a1, \RS
+        jal     ra, rvtest_mcounteren_write
+#else
+        csrw    CSR_MCOUNTEREN, \RS
+#endif
+.endm
 
+.macro RVTEST_MCOUNTEREN_SET RS
+#ifdef RVTEST_TIME_CSR_EMULATION
+        mv      a1, \RS
+        jal     ra, rvtest_mcounteren_set
+#else
+        csrs    CSR_MCOUNTEREN, \RS
+#endif
+.endm
+
+.macro RVTEST_MCOUNTEREN_CLEAR RS
+#ifdef RVTEST_TIME_CSR_EMULATION
+        mv      a1, \RS
+        jal     ra, rvtest_mcounteren_clear
+#else
+        csrc    CSR_MCOUNTEREN, \RS
+#endif
+.endm
+
+.macro RVTEST_SCOUNTEREN_WRITE RS
+#ifdef RVTEST_TIME_CSR_EMULATION
+        mv      a1, \RS
+        jal     ra, rvtest_scounteren_write
+#else
+        csrw    CSR_SCOUNTEREN, \RS
+#endif
+.endm
+
+.macro RVTEST_SCOUNTEREN_SET RS
+#ifdef RVTEST_TIME_CSR_EMULATION
+        mv      a1, \RS
+        jal     ra, rvtest_scounteren_set
+#else
+        csrs    CSR_SCOUNTEREN, \RS
+#endif
+.endm
+
+.macro RVTEST_SCOUNTEREN_CLEAR RS
+#ifdef RVTEST_TIME_CSR_EMULATION
+        mv      a1, \RS
+        jal     ra, rvtest_scounteren_clear
+#else
+        csrc    CSR_SCOUNTEREN, \RS
+#endif
+.endm
 //==============================================================================
 //==============================================================================
 //
@@ -1166,14 +1240,215 @@ common_\__MODE__\()entry:                        // common entry for all traps i
         SREG    T2, trap_sv_off+2*REGWIDTH(sp)  // save T2 (x7)
         SREG    T1, trap_sv_off+1*REGWIDTH(sp)  // save T1 (x6)
 
-        // ---- Global trap counter: shared by every privilege mode's handler ----
-        // T1..T4 were just saved above, so they are free scratch here.
-        LA(     T1, rvtest_trap_count)          // T1 = address of trap_count
-        LREG    T2, 0(T1)                        // T2 = current count
-        addi    T2, T2, 1                         // count++
-        SREG    T2, 0(T1)                        // store back
-
         csrr    T5, CSR_XCAUSE                   // T5 = xcause (T5 is x14, so caller's a0 is NOT disturbed)
+
+.ifc \__MODE__ , M
+#ifdef RVTEST_TIME_CSR_EMULATION
+
+        // Only consider illegal-instruction exceptions.
+        LI(     T4, CAUSE_ILLEGAL_INSTRUCTION)
+        bne     T5, T4, Mtime_not_emulated
+
+        // Fetch the 32-bit instruction at mepc.
+        // The ZicntrS/U tests execute without address translation.
+        csrr    T3, CSR_MEPC
+        lwu     T2, 0(T3)
+
+        // Check opcode[6:0] = SYSTEM, 0x73.
+        andi    T4, T2, 0x7f
+        LI(     T3, 0x73)
+        bne     T4, T3, Mtime_not_emulated
+
+        // Check funct3 = CSRRS, the form used by:
+        // csrr rd,time  ==  csrrs rd,time,x0
+        srli    T4, T2, 12
+        andi    T4, T4, 7
+        LI(     T3, 2)
+        bne     T4, T3, Mtime_not_emulated
+
+        // Check rs1 = x0. This ensures it is a pure CSR read.
+        srli    T4, T2, 15
+        andi    T4, T4, 31
+        bnez    T4, Mtime_not_emulated
+
+        // Check CSR[11:0] = time, 0xC01.
+        srli    T4, T2, 20
+        LI(     T3, CSR_TIME)
+        bne     T4, T3, Mtime_not_emulated
+
+        // Determine the privilege mode that executed csrr rd,time.
+        // On entry to an M-mode trap, mstatus.MPP contains that mode:
+        // 0 = U-mode, 1 = S-mode, 3 = M-mode.
+        csrr    T3, CSR_MSTATUS
+        srli    T4, T3, MPP_LSB
+        andi    T4, T4, 3
+
+        // M-mode always has access. mcounteren does not restrict M-mode.
+        LI(     T3, MMODE_SIG)
+        beq     T4, T3, Mtime_access_allowed
+
+        // S-mode requires mcounteren.TM.
+        LI(     T3, SMODE_SIG)
+        beq     T4, T3, Mtime_check_mcounteren
+
+        // The only remaining supported origin is U-mode, encoded as zero.
+        // Reject reserved/unsupported MPP encodings.
+        bnez    T4, Mtime_not_emulated
+
+        // U-mode requires scounteren.TM.
+        LREG    T4, scounteren_shadow_off(sp)
+        andi    T4, T4, MCOUNTEREN_TIME
+        beqz    T4, Mtime_not_emulated
+
+        // U-mode must also pass the M-mode permission gate.
+        // S-mode enters here directly.
+Mtime_check_mcounteren:
+        LREG    T4, mcounteren_shadow_off(sp)
+        andi    T4, T4, MCOUNTEREN_TIME
+        beqz    T4, Mtime_not_emulated
+
+Mtime_access_allowed:
+        // Read the platform CLINT mtime value.
+        LI(     T3, RVMODEL_MTIME_ADDRESS)
+        ld      T1, 0(T3)
+
+        // Skip the faulting 32-bit CSR instruction.
+        csrr    T3, CSR_MEPC
+        addi    T3, T3, 4
+        csrw    CSR_MEPC, T3
+
+        // Remember the invisible mret side effect for later signature
+        // normalization.
+        LI(     T4, 1)
+        SREG    T4, time_emulation_pending_off(sp)
+
+        // Extract rd from instruction bits 11:7.
+        //
+        // Each dispatch-table entry is 8 bytes: one result operation
+        // followed by one jump. Therefore rd * 8 selects its entry.
+        srli    T2, T2, 7
+        andi    T2, T2, 31
+        slli    T2, T2, 3
+
+        LA(     T3, Mtime_rd_table)
+        add     T3, T3, T2
+        jr      T3
+
+        // Every table entry must remain exactly two 32-bit instructions.
+        // The surrounding trap handler uses .option norvc.
+        .balign 8
+Mtime_rd_table:
+        nop
+        j       Mtime_emulated_return       // x0: discard result
+
+        mv      x1, T1
+        j       Mtime_emulated_return       // x1
+
+        SREG    T1, trap_sv_off+7*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x2/sp
+
+        mv      x3, T1
+        j       Mtime_emulated_return       // x3
+
+        mv      x4, T1
+        j       Mtime_emulated_return       // x4
+
+        mv      x5, T1
+        j       Mtime_emulated_return       // x5
+
+        SREG    T1, trap_sv_off+1*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x6/T1
+
+        SREG    T1, trap_sv_off+2*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x7/T2
+
+        SREG    T1, trap_sv_off+3*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x8/T3
+
+        SREG    T1, trap_sv_off+4*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x9/T4
+
+        mv      x10, T1
+        j       Mtime_emulated_return
+
+        mv      x11, T1
+        j       Mtime_emulated_return
+
+        mv      x12, T1
+        j       Mtime_emulated_return
+
+        mv      x13, T1
+        j       Mtime_emulated_return
+
+        SREG    T1, trap_sv_off+5*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x14/T5
+
+        SREG    T1, trap_sv_off+6*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x15/T6
+
+        mv      x16, T1
+        j       Mtime_emulated_return
+
+        mv      x17, T1
+        j       Mtime_emulated_return
+
+        mv      x18, T1
+        j       Mtime_emulated_return
+
+        mv      x19, T1
+        j       Mtime_emulated_return
+
+        mv      x20, T1
+        j       Mtime_emulated_return
+
+        mv      x21, T1
+        j       Mtime_emulated_return
+
+        mv      x22, T1
+        j       Mtime_emulated_return
+
+        mv      x23, T1
+        j       Mtime_emulated_return
+
+        mv      x24, T1
+        j       Mtime_emulated_return
+
+        mv      x25, T1
+        j       Mtime_emulated_return
+
+        mv      x26, T1
+        j       Mtime_emulated_return
+
+        mv      x27, T1
+        j       Mtime_emulated_return
+
+        mv      x28, T1
+        j       Mtime_emulated_return
+
+        mv      x29, T1
+        j       Mtime_emulated_return
+
+        mv      x30, T1
+        j       Mtime_emulated_return
+
+        mv      x31, T1
+        j       Mtime_emulated_return
+
+Mtime_emulated_return:
+        j       resto_\__MODE__\()rtn
+
+Mtime_not_emulated:
+        // Any denied time access or unrelated illegal instruction continues
+        // through the ordinary visible-trap path.
+
+#endif
+.endif
+
+        // ---- Global trap counter: shared by every privilege mode's handler ----
+        LA(     T1, rvtest_trap_count)
+        LREG    T2, 0(T1)
+        addi    T2, T2, 1
+        SREG    T2, 0(T1)
 
 //==============================================================================
 // T-SBI DISPATCH — M-MODE
@@ -1974,6 +2249,17 @@ sv_\__MODE__\()vect:
 
         1:
         csrr    T2, CSR_XSTATUS                 // deposit xstatus(17:0) into [30:13)
+.ifc \__MODE__ , M
+#ifdef RVTEST_TIME_CSR_EMULATION
+        // A previous invisible time emulation executed mret and changed MPIE.
+        // Clear MPIE only from the value being recorded in the signature.
+        // The real mstatus register is not modified here.
+        LREG    T3, time_emulation_pending_off(sp)
+        beqz    T3, 1f
+        andi    T2, T2, -129       // clear bit 7, mstatus.MPIE
+1:
+#endif
+.endif
         slli    T2, T2, UDB_MXLEN-17
         srli    T2, T2, UDB_MXLEN-17-13
         LI(     T3, 0x219FE5)                   // clear 16:13 (XS,FS) 10:9 (VS) and unused bits 4,2,0
@@ -2619,6 +2905,88 @@ rtn_fm_mmode:
 
 .endif  // end of M-mode rtn2mmode
 
+
+//==============================================================================
+// MCOUNTEREN SHADOW HELPERS
+//
+// Input:
+//   a1 = value or mask
+//
+// Clobbers:
+//   ra, a0, a1, a2
+//==============================================================================
+
+.ifc \__MODE__ , M
+#ifdef RVTEST_TIME_CSR_EMULATION
+
+rvtest_mcounteren_write:
+        // Write the value supported by the physical CSR.
+        csrw    CSR_MCOUNTEREN, a1
+
+        // Preserve the complete value requested by the test, including TM.
+        LA(     a0, Mmcounteren_shadow)
+        SREG    a1, 0(a0)
+        ret
+
+rvtest_mcounteren_set:
+        // Apply the set operation to hardware.
+        csrs    CSR_MCOUNTEREN, a1
+
+        // Apply the same operation to the software shadow.
+        LA(     a0, Mmcounteren_shadow)
+        LREG    a2, 0(a0)
+        or      a2, a2, a1
+        SREG    a2, 0(a0)
+        ret
+
+rvtest_mcounteren_clear:
+        // Apply the clear operation to hardware.
+        csrc    CSR_MCOUNTEREN, a1
+
+        // Apply: shadow = shadow & ~mask.
+        LA(     a0, Mmcounteren_shadow)
+        LREG    a2, 0(a0)
+        not     a1, a1
+        and     a2, a2, a1
+        SREG    a2, 0(a0)
+        ret
+
+
+rvtest_scounteren_write:
+        // Write the value supported by the physical CSR.
+        csrw    CSR_SCOUNTEREN, a1
+
+        // Preserve the complete requested value, including TM.
+        LA(     a0, Mscounteren_shadow)
+        SREG    a1, 0(a0)
+        ret
+
+rvtest_scounteren_set:
+        // Apply the set operation to hardware.
+        csrs    CSR_SCOUNTEREN, a1
+
+        // Apply the same operation to the software shadow.
+        LA(     a0, Mscounteren_shadow)
+        LREG    a2, 0(a0)
+        or      a2, a2, a1
+        SREG    a2, 0(a0)
+        ret
+
+rvtest_scounteren_clear:
+        // Apply the clear operation to hardware.
+        csrc    CSR_SCOUNTEREN, a1
+
+        // Apply: shadow = shadow & ~mask.
+        LA(     a0, Mscounteren_shadow)
+        LREG    a2, 0(a0)
+        not     a1, a1
+        and     a2, a2, a1
+        SREG    a2, 0(a0)
+        ret
+
+#endif
+.endif
+
 //==============================================================================
 // GOTO_SMODE RETURN HANDLER (S-mode only, legacy a0==0 path)
 //==============================================================================
@@ -2984,6 +3352,13 @@ rvtest_\__MODE__\()end:                            // epilog is done for this mo
 // (goto_lower_sv_off): T1, T2, T4, T3. None of these uses can be active at
 // the same time.
 \__MODE__\()rvmodel_sv:    .fill   8, REGWIDTH, 0xdeadbeef                   // RVMODEL/T-SBI scratch area
+
+#ifdef RVTEST_TIME_CSR_EMULATION
+\__MODE__\()mcounteren_shadow:      .fill 1, REGWIDTH, 0
+\__MODE__\()scounteren_shadow:      .fill 1, REGWIDTH, 0
+\__MODE__\()time_emulation_pending: .fill 1, REGWIDTH, 0
+#endif
+
 \__MODE__\()sv_area_end:                           // end marker (used for size calculation assertions)
 
 .option pop

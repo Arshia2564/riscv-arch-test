@@ -38,8 +38,8 @@ def _generate_mcounteren_access_u_tests(test_data: TestData) -> list[str]:
         lines.extend(
             [
                 test_data.add_testcase(f"walking_1_{i}", coverpoint, covergroup),
-                "csrw mcounteren, zero  # clear all bits",
-                f"csrs mcounteren, x{walk_reg}  # set current bit",
+                "RVTEST_MCOUNTEREN_WRITE zero  # clear hardware CSR and shadow",
+                f"RVTEST_MCOUNTEREN_SET x{walk_reg}  # set hardware CSR and shadow",
                 "RVTEST_GOTO_LOWER_MODE Umode",
             ]
         )
@@ -82,8 +82,8 @@ def _generate_mcounteren_access_u_tests(test_data: TestData) -> list[str]:
         lines.extend(
             [
                 test_data.add_testcase(f"walking_0_{i}", coverpoint, covergroup),
-                f"csrs mcounteren, x{ones_reg}  # set all bits",
-                f"csrc mcounteren, x{walk_reg}  # clear current bit",
+                f"RVTEST_MCOUNTEREN_SET x{ones_reg}  # set all bits in hardware CSR and shadow",
+                f"RVTEST_MCOUNTEREN_CLEAR x{walk_reg}  # clear current bit in hardware CSR and shadow",
                 "RVTEST_GOTO_LOWER_MODE Umode",
             ]
         )
@@ -141,8 +141,8 @@ def _generate_mcounteren_access_m_tests(test_data: TestData) -> list[str]:
         lines.extend(
             [
                 test_data.add_testcase(f"walking_1_{i}", coverpoint, covergroup),
-                "csrw mcounteren, zero  # clear all bits",
-                f"csrs mcounteren, x{walk_reg}  # set current bit",
+                "RVTEST_MCOUNTEREN_WRITE zero  # clear hardware CSR and shadow",
+                f"RVTEST_MCOUNTEREN_SET x{walk_reg}  # set hardware CSR and shadow",
             ]
         )
         if i < 3:
@@ -183,8 +183,8 @@ def _generate_mcounteren_access_m_tests(test_data: TestData) -> list[str]:
         lines.extend(
             [
                 test_data.add_testcase(f"walking_0_{i}", coverpoint, covergroup),
-                f"csrs mcounteren, x{ones_reg}  # set all bits",
-                f"csrc mcounteren, x{walk_reg}  # clear current bit",
+                f"RVTEST_MCOUNTEREN_SET x{ones_reg}  # set all bits in hardware CSR and shadow",
+                f"RVTEST_MCOUNTEREN_CLEAR x{walk_reg}  # clear current bit in hardware CSR and shadow",
             ]
         )
         if i < 3:
@@ -240,18 +240,18 @@ def _generate_mcounter_inc_inaccessible_tests(test_data: TestData) -> list[str]:
             test_data.add_testcase("U", coverpoint, covergroup),
             f"csrr x{old_reg}, instret",
             "# make counter inaccessible in U mode",
-            "csrw mcounteren, zero",
+            "RVTEST_MCOUNTEREN_WRITE zero  # clear hardware CSR and shadow",
             "#ifdef S_SUPPORTED",
-            "csrw scounteren, zero",
+            "RVTEST_SCOUNTEREN_WRITE zero  # clear hardware CSR and shadow",
             "#endif",
             "RVTEST_GOTO_LOWER_MODE Umode",
             "nop",
             "RVTEST_GOTO_MMODE",
             "# make counter accessible in U mode",
             f" LI(x{read_reg}, -1)",
-            f"csrw mcounteren, x{read_reg}",
+            f"RVTEST_MCOUNTEREN_WRITE x{read_reg}  # set hardware CSR and shadow",
             "#ifdef S_SUPPORTED",
-            f"csrw scounteren, x{read_reg}",
+            f"RVTEST_SCOUNTEREN_WRITE x{read_reg}  # set hardware CSR and shadow",
             "#endif",
             "RVTEST_GOTO_LOWER_MODE Umode",
             f"csrr x{read_reg}, instret",
@@ -281,7 +281,7 @@ def make_zicntru(test_data: TestData) -> list[TestChunk]:
             "#ifdef S_SUPPORTED",
             "# Initialize scounteren if S-mode is supported (the boot logic should do this but isn't implemented yet)",
             f"LI(x{tmpreg}, -1)",
-            f"csrw scounteren, x{tmpreg}",
+            f"RVTEST_SCOUNTEREN_WRITE x{tmpreg}  # initialize hardware CSR and shadow",
             "#endif",
             "",
         ]
