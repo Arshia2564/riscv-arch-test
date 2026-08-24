@@ -101,6 +101,7 @@
 //    TSBI_GOTO_UMODE  (a0=3)          — Switch caller to U-mode
 //    TSBI_GOTO_VSMODE (a0=4)          — Switch caller to VS-mode (H required)
 //    TSBI_GOTO_VUMODE (a0=5)          — Switch caller to VU-mode (H required)
+//    TSBI_READ_TIME   (a0=6)          — Read the platform time source in M-mode
 //    TSBI_ECALL_TEST  (a0=0x73)       — Test ecall path; returns xEPC in a0
 //    CSR_ACCESS       (a0=CSR opcode) — Execute CSR instruction; rd must be a0
 //    Any other value                  — Returns -1 in a0 (TSBI_RESERVED_RET)
@@ -108,7 +109,8 @@
 //  Dispatch hierarchy:
 //    M-mode handler:  handles all operations directly
 //    S-mode handler:  handles ECALL_TEST, GOTO_S/U, S-mode CSR_ACCESS locally;
-//                     forwards GOTO_M/VS/VU and M-mode CSR_ACCESS to M-mode via ecall
+//                     forwards READ_TIME, GOTO_M/VS/VU, and M-mode CSR_ACCESS
+//                     to M-mode via ecall
 //
 //************************************************************************************
 
@@ -116,13 +118,6 @@
 #define DEFAULT_DATA_REG x3                      // test data pointer register
 #define DEFAULT_TEMP_REG x4                      // general temporary for test macros
 #define DEFAULT_LINK_REG x5                      // link register for test macros (jal return address)
-
-// Some implementations expose mtime MMIO but do not implement the time CSR.
-// The emulation path currently supports RV64 systems with direct access to a
-// 64-bit mtime register.
-#if (UDB_MXLEN == 64) && !defined(UDB_TIME_CSR_IMPLEMENTED) && defined(RVMODEL_MTIME_ADDRESS)
-  #define RVTEST_TIME_CSR_EMULATION
-#endif
 
 
 #ifndef T1
@@ -143,7 +138,6 @@
 #ifndef T6
   #define T6      x15                            // handler temporary 6
 #endif
-
 //==============================================================================
 // SECTION 2: ARCHITECTURE CONSTANTS
 //
@@ -175,6 +169,7 @@
 //
 // Design rationale for the operation code values:
 //   - GOTO_xMODE uses small integers (1-5) for easy range checking
+//   - READ_TIME uses the next small integer (6) and is always serviced in M-mode
 //   - ECALL_TEST uses the ecall instruction encoding (0x73) itself, which is
 //     mnemonic and doesn't conflict with GOTO codes or CSR encodings
 //   - CSR_ACCESS uses the actual CSR instruction encoding (opcode 0x73 with
@@ -184,9 +179,10 @@
 //
 // Dispatch order in the handler:
 //   1. If (a0-1) < 5  -> GOTO_xMODE      (a0 in range [1..5])
-//   2. If a0 == 0x73  -> ECALL_TEST      (exact match on ecall encoding)
-//   3. If a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (SYSTEM opcode with funct3)
-//   4. Otherwise       -> RESERVED        (return -1)
+//   2. If a0 == 6     -> READ_TIME       (M-mode platform time service)
+//   3. If a0 == 0x73  -> ECALL_TEST      (exact match on ecall encoding)
+//   4. If a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (SYSTEM opcode with funct3)
+//   5. Otherwise       -> RESERVED        (return -1)
 //==============================================================================
 
 #define ALT_GOTO_MMODE      0x00000000           // a0 value: Used by RVTEST_GOTO_DELEGATED_MMODE
@@ -195,6 +191,7 @@
 #define TSBI_GOTO_UMODE     0x00000003           // a0 value: switch to User mode
 #define TSBI_GOTO_VSMODE    0x00000004           // a0 value: switch to Virtual Supervisor mode (requires H)
 #define TSBI_GOTO_VUMODE    0x00000005           // a0 value: switch to Virtual User mode (requires H)
+#define TSBI_READ_TIME      0x00000006           // a0 value: read the platform time source
 #define TSBI_ECALL_TEST     0x00000073           // a0 value: test ecall trap path, returns xEPC in a0
 
 // CSR_ACCESS is not a single #define — it's any value where:
@@ -264,11 +261,7 @@
 #define tramp_sz        ((actual_tramp_sz+4) & -8)                       // round up to dword alignment
 #define ptr_sv_sz       (16*8)                                           // 16 pointer slots × 8 bytes each
 #define reg_sv_sz       ( 8*REGWIDTH)                                    // 8 handler temp regs saved
-#ifdef RVTEST_TIME_CSR_EMULATION
-  #define model_sv_sz   (11*REGWIDTH)                                    // 8 scratch + 3 time-emulation slots
-#else
-  #define model_sv_sz   ( 8*REGWIDTH)                                    // 8 slots for RVMODEL macro scratch
-#endif
+#define model_sv_sz     ( 8*REGWIDTH)                                    // 8 slots for RVMODEL macro scratch
 #define sv_area_sz      (tramp_sz + ptr_sv_sz + reg_sv_sz + model_sv_sz) // total save area per mode
 #define int_hndlr_tblsz (UDB_MXLEN*2*WDBYTSZ)                                // size of combined int+exception dispatch tables
 
@@ -327,14 +320,6 @@
 // neither can be active while RVTEST_GOTO_LOWER_MODE executes.
 #define goto_lower_sv_off (rvmodel_sv_off+4*(REGWIDTH)) // GOTO_LOWER_MODE T1/T2/T4/T3 save slots
 
-#ifdef RVTEST_TIME_CSR_EMULATION
-  // Requested counter-enable values. These preserve TM when hardware
-  // hardwires the bit to zero because the time CSR is absent.
-  #define mcounteren_shadow_off       (rvmodel_sv_off+8*(REGWIDTH))
-  #define scounteren_shadow_off       (rvmodel_sv_off+9*(REGWIDTH))
-  // Set after an invisible time CSR emulation changes mstatus.MPIE.
-  #define time_emulation_pending_off  (rvmodel_sv_off+10*(REGWIDTH))
-#endif
 //==============================================================================
 // SECTION 8: INSTANTIATE_MODE_MACRO
 //
@@ -480,6 +465,7 @@
 // Usage in tests:
 //   RVTEST_TSBI_GOTO_MMODE              // switch to M-mode, clobbers a0
 //   RVTEST_TSBI_GOTO_UMODE              // switch to U-mode, clobbers a0
+//   RVTEST_TSBI_READ_TIME t0             // read platform time into t0, clobbers a0
 //   RVTEST_TSBI_ECALL_TEST              // test ecall path, result in a0
 //   RVTEST_TSBI_CSR_ACCESS 0x30052573, zero  // read mstatus into a0
 //
@@ -515,6 +501,22 @@
   .option norvc                                  // ensure consistent code size
   li   a0, TSBI_GOTO_UMODE                      // a0 = 3 (GOTO_UMODE operation code)
   ecall                                          // trap to handler; handler sets MPP=U, mrets
+  .option pop
+.endm
+
+// Read the platform time source through T-SBI.
+//
+// This is primarily a diagnostic/service macro. Zicntr tests must continue to
+// execute `csrr rd, time`; the transparent illegal-instruction path below uses
+// the same M-mode backend when CSR_TIME is implemented by trap-and-emulate.
+//
+// CLOBBERS: a0. PRESERVES: all other registers, except when rd is one of them.
+.macro RVTEST_TSBI_READ_TIME rd=a0
+  .option push
+  .option norvc
+  li   a0, TSBI_READ_TIME
+  ecall
+  mv   \rd, a0
   .option pop
 .endm
 
@@ -857,62 +859,6 @@
         #define  RVMODEL_CLR_VEXT_INT    RVTEST_DFLT_INT_HNDLR  // VS-mode ext interrupt clear: abort
 #endif
 
-// Counter-enable accessors. When time CSR emulation is active, update both
-// the physical CSR and its requested-value shadow. Otherwise, use the CSR
-// directly. ra/a0/a1/a2 are reserved by the privileged-test framework.
-.macro RVTEST_MCOUNTEREN_WRITE RS
-#ifdef RVTEST_TIME_CSR_EMULATION
-        mv      a1, \RS
-        jal     ra, rvtest_mcounteren_write
-#else
-        csrw    CSR_MCOUNTEREN, \RS
-#endif
-.endm
-
-.macro RVTEST_MCOUNTEREN_SET RS
-#ifdef RVTEST_TIME_CSR_EMULATION
-        mv      a1, \RS
-        jal     ra, rvtest_mcounteren_set
-#else
-        csrs    CSR_MCOUNTEREN, \RS
-#endif
-.endm
-
-.macro RVTEST_MCOUNTEREN_CLEAR RS
-#ifdef RVTEST_TIME_CSR_EMULATION
-        mv      a1, \RS
-        jal     ra, rvtest_mcounteren_clear
-#else
-        csrc    CSR_MCOUNTEREN, \RS
-#endif
-.endm
-
-.macro RVTEST_SCOUNTEREN_WRITE RS
-#ifdef RVTEST_TIME_CSR_EMULATION
-        mv      a1, \RS
-        jal     ra, rvtest_scounteren_write
-#else
-        csrw    CSR_SCOUNTEREN, \RS
-#endif
-.endm
-
-.macro RVTEST_SCOUNTEREN_SET RS
-#ifdef RVTEST_TIME_CSR_EMULATION
-        mv      a1, \RS
-        jal     ra, rvtest_scounteren_set
-#else
-        csrs    CSR_SCOUNTEREN, \RS
-#endif
-.endm
-
-.macro RVTEST_SCOUNTEREN_CLEAR RS
-#ifdef RVTEST_TIME_CSR_EMULATION
-        mv      a1, \RS
-        jal     ra, rvtest_scounteren_clear
-#else
-        csrc    CSR_SCOUNTEREN, \RS
-#endif
-.endm
 //==============================================================================
 //==============================================================================
 //
@@ -1243,84 +1189,54 @@ common_\__MODE__\()entry:                        // common entry for all traps i
         csrr    T5, CSR_XCAUSE                   // T5 = xcause (T5 is x14, so caller's a0 is NOT disturbed)
 
 .ifc \__MODE__ , M
-#ifdef RVTEST_TIME_CSR_EMULATION
+#if !defined(UDB_TIME_CSR_IMPLEMENTED) && defined(RVMODEL_MTIME_ADDRESS)
 
         // Only consider illegal-instruction exceptions.
         LI(     T4, CAUSE_ILLEGAL_INSTRUCTION)
-        bne     T5, T4, Mtime_not_emulated
+        bne     T5, T4, Mtime_s_not_emulated
 
         // Fetch the 32-bit instruction at mepc.
-        // The ZicntrS/U tests execute without address translation.
+        // This focused ZicntrS test executes without address translation.
         csrr    T3, CSR_MEPC
+#if (UDB_MXLEN==64)
         lwu     T2, 0(T3)
+#else
+        lw      T2, 0(T3)
+#endif
 
         // Check opcode[6:0] = SYSTEM, 0x73.
         andi    T4, T2, 0x7f
         LI(     T3, 0x73)
-        bne     T4, T3, Mtime_not_emulated
+        bne     T4, T3, Mtime_s_not_emulated
 
         // Check funct3 = CSRRS, the form used by:
         // csrr rd,time  ==  csrrs rd,time,x0
         srli    T4, T2, 12
         andi    T4, T4, 7
         LI(     T3, 2)
-        bne     T4, T3, Mtime_not_emulated
+        bne     T4, T3, Mtime_s_not_emulated
 
         // Check rs1 = x0. This ensures it is a pure CSR read.
         srli    T4, T2, 15
         andi    T4, T4, 31
-        bnez    T4, Mtime_not_emulated
+        bnez    T4, Mtime_s_not_emulated
 
         // Check CSR[11:0] = time, 0xC01.
         srli    T4, T2, 20
         LI(     T3, CSR_TIME)
-        bne     T4, T3, Mtime_not_emulated
+        bne     T4, T3, Mtime_s_not_emulated
 
-        // Determine the privilege mode that executed csrr rd,time.
-        // On entry to an M-mode trap, mstatus.MPP contains that mode:
-        // 0 = U-mode, 1 = S-mode, 3 = M-mode.
-        csrr    T3, CSR_MSTATUS
-        srli    T4, T3, MPP_LSB
-        andi    T4, T4, 3
-
-        // M-mode always has access. mcounteren does not restrict M-mode.
-        LI(     T3, MMODE_SIG)
-        beq     T4, T3, Mtime_access_allowed
-
-        // S-mode requires mcounteren.TM.
-        LI(     T3, SMODE_SIG)
-        beq     T4, T3, Mtime_check_mcounteren
-
-        // The only remaining supported origin is U-mode, encoded as zero.
-        // Reject reserved/unsupported MPP encodings.
-        bnez    T4, Mtime_not_emulated
-
-        // U-mode requires scounteren.TM.
-        LREG    T4, scounteren_shadow_off(sp)
-        andi    T4, T4, MCOUNTEREN_TIME
-        beqz    T4, Mtime_not_emulated
-
-        // U-mode must also pass the M-mode permission gate.
-        // S-mode enters here directly.
-Mtime_check_mcounteren:
-        LREG    T4, mcounteren_shadow_off(sp)
-        andi    T4, T4, MCOUNTEREN_TIME
-        beqz    T4, Mtime_not_emulated
-
-Mtime_access_allowed:
-        // Read the platform CLINT mtime value.
-        LI(     T3, RVMODEL_MTIME_ADDRESS)
-        ld      T1, 0(T3)
+        // The platform exposes time through MMIO rather than CSR_TIME. Any
+        // trapped architectural read is serviced identically; no software
+        // shadow of mcounteren/scounteren is required.
+        // Use the internal T-SBI time backend. This is a normal subroutine,
+        // not a nested ecall: the illegal-instruction handler is already in M.
+        jal     T3, tsbi_time_read_backend
 
         // Skip the faulting 32-bit CSR instruction.
         csrr    T3, CSR_MEPC
         addi    T3, T3, 4
         csrw    CSR_MEPC, T3
-
-        // Remember the invisible mret side effect for later signature
-        // normalization.
-        LI(     T4, 1)
-        SREG    T4, time_emulation_pending_off(sp)
 
         // Extract rd from instruction bits 11:7.
         //
@@ -1437,9 +1353,9 @@ Mtime_rd_table:
 Mtime_emulated_return:
         j       resto_\__MODE__\()rtn
 
-Mtime_not_emulated:
-        // Any denied time access or unrelated illegal instruction continues
-        // through the ordinary visible-trap path.
+Mtime_s_not_emulated:
+        // Any unrelated illegal instruction continues through the ordinary
+        // visible-trap path.
 
 #endif
 .endif
@@ -1460,9 +1376,10 @@ Mtime_not_emulated:
 //   4. NEW: Dispatch on the caller's a0 (still live — the handler never
 //      touches a0/a1):
 //      a. a0 in [1..5] -> GOTO_xMODE (set MPP/MPV, bump mepc, mret)
-//      b. a0 == 0x73   -> ECALL_TEST (return xEPC in a0, bump mepc)
-//      c. a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (execute dynamic CSR instr)
-//      d. Otherwise    -> RESERVED (return -1 in a0)
+//      b. a0 == 6      -> READ_TIME (read the M-mode platform time source)
+//      c. a0 == 0x73   -> ECALL_TEST (return xEPC in a0, bump mepc)
+//      d. a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (execute dynamic CSR instr)
+//      e. Otherwise    -> RESERVED (return -1 in a0)
 //   5. If not an SBI call: fall through to normal trap signature recording
 //
 // REGISTER STATE:
@@ -1524,12 +1441,31 @@ tsbi_\__MODE__\()dispatch:
         li      T2, 5                              // T2 = 5 (upper bound)
         bltu    T4, T2, tsbi_\__MODE__\()goto_mode // if (a0-1) < 5 -> a0 in [1..5] -> GOTO_xMODE dispatch
 
+        // --- Check for READ_TIME (a0 == 6) ---
+        LI(     T2, TSBI_READ_TIME)
+        beq     a0, T2, tsbi_\__MODE__\()read_time
+
         // --- Check for ECALL_TEST (a0 == 0x00000073) ---
         LI(     T2, TSBI_ECALL_TEST)              // T2 = 0x73 (ECALL_TEST operation code)
         beq     a0, T2, tsbi_\__MODE__\()ecall_test // if caller_a0 == 0x73 -> ECALL_TEST handler
 
         // Otherwise consult dispatch table
         j tsbi_instr_table_dispatch
+
+        //--------------------------------------------------------------
+        // T-SBI READ_TIME handler (M-mode)
+        //--------------------------------------------------------------
+tsbi_\__MODE__\()read_time:
+#ifdef RVMODEL_MTIME_ADDRESS
+        jal     T3, tsbi_time_read_backend         // T1 = platform time value
+        mv      a0, T1                             // T-SBI result register
+#else
+        li      a0, TSBI_RESERVED_RET
+#endif
+        csrr    T3, CSR_XEPC
+        addi    T3, T3, 4                          // skip the caller's ecall
+        csrw    CSR_XEPC, T3
+        j       resto_\__MODE__\()rtn
 
         //--------------------------------------------------------------
         // T-SBI ECALL_TEST handler (M-mode)
@@ -1688,6 +1624,7 @@ tsbi_\__MODE__\()goto_vu:
 //   - GOTO_MMODE:  needs M-mode to set MPP
 //   - GOTO_VSMODE: needs M-mode to set MPV  TODO: can do with SPV
 //   - GOTO_VUMODE: needs M-mode to set MPV  TODO: can do with SPV
+//   - READ_TIME:   needs access to the M-mode platform time source
 //   - CSR_ACCESS for M-mode CSRs: needs M-mode privilege (CSR addr[9:8] == 11)
 //
 // FORWARDING MECHANISM:
@@ -1723,6 +1660,11 @@ tsbi_\__MODE__\()dispatch:
         addi    T4, a0, -1                         // T4 = a0 - 1
         li      T2, 5                               // T2 = 5
         bltu    T4, T2, tsbi_\__MODE__\()goto_mode // a0 in [1..5] -> GOTO dispatch
+
+        // READ_TIME is always serviced by M-mode. Advance the U-mode EPC
+        // before forwarding so the final sret resumes after the original ecall.
+        LI(     T2, TSBI_READ_TIME)
+        beq     a0, T2, tsbi_\__MODE__\()forward_time
 
         // Check for ECALL_TEST (a0 == 0x73)
         LI(     T2, TSBI_ECALL_TEST)              // T2 = 0x73
@@ -1786,6 +1728,12 @@ tsbi_\__MODE__\()goto_u:                          // Return to U-mode via sret
         LI(     T3, SSTATUS_SPP)                   // T3 = SPP bit mask
         csrc    CSR_XSTATUS, T3                     // clear sstatus.SPP = 0 (sret -> U-mode)
         j       resto_\__MODE__\()rtn              // sret returns to U-mode at sepc
+
+tsbi_\__MODE__\()forward_time:
+        csrr    T3, CSR_XEPC
+        addi    T3, T3, 4                          // skip the U-mode ecall
+        csrw    CSR_XEPC, T3
+        j       tsbi_\__MODE__\()forward_to_m
 
         //--- S-mode forwarding to M-mode ---
         // Restore all handler regs and ecall. M-mode handler processes the request.
@@ -2249,23 +2197,24 @@ sv_\__MODE__\()vect:
 
         1:
         csrr    T2, CSR_XSTATUS                 // deposit xstatus(17:0) into [30:13)
-.ifc \__MODE__ , M
-#ifdef RVTEST_TIME_CSR_EMULATION
-        // A previous invisible time emulation executed mret and changed MPIE.
-        // Clear MPIE only from the value being recorded in the signature.
-        // The real mstatus register is not modified here.
-        LREG    T3, time_emulation_pending_off(sp)
-        beqz    T3, 1f
-        andi    T2, T2, -129       // clear bit 7, mstatus.MPIE
-1:
-#endif
-.endif
         slli    T2, T2, UDB_MXLEN-17
         srli    T2, T2, UDB_MXLEN-17-13
         LI(     T3, 0x219FE5)                   // clear 16:13 (XS,FS) 10:9 (VS) and unused bits 4,2,0
         xori    T3, T3, -1
         and     T3, T2, T3
         or      T3, T6, T3                      // merge with other bits
+
+// A trap-and-emulate implementation of CSR_TIME necessarily executes mret,
+// which sets mstatus.MPIE. Sail implements CSR_TIME directly, so that
+// M-private side effect is absent from its later trap signatures. Zicntr does
+// not test MPIE; normalize only its M-mode signature word so the execution
+// environment remains invisible without keeping counteren or pending shadows.
+.ifc \__MODE__ , M
+#if defined(RVTEST_TIME_CSR_TRAP_EMULATION) && !defined(UDB_TIME_CSR_IMPLEMENTED)
+        LI(     T2, ~(1 << 20))                   // xstatus bit 7 is packed at bit 20
+        and     T3, T3, T2
+#endif
+.endif
 
 //if  MMode and RV32 move mstatush[ 7: 6] into bit 15:14
 //if  MMode and RV64 move mstatus [39:38] into bit 15:14
@@ -2905,84 +2854,25 @@ rtn_fm_mmode:
 
 .endif  // end of M-mode rtn2mmode
 
-
 //==============================================================================
-// MCOUNTEREN SHADOW HELPERS
+// T-SBI TIME BACKEND
 //
-// Input:
-//   a1 = value or mask
-//
-// Clobbers:
-//   ra, a0, a1, a2
+// Called internally by the transparent illegal-instruction emulation path.
+// T3 is the link register, T4 is scratch, and T1 receives the time value.
+// No nested ecall is needed because the caller is already in M-mode.
 //==============================================================================
 
 .ifc \__MODE__ , M
-#ifdef RVTEST_TIME_CSR_EMULATION
+#ifdef RVMODEL_MTIME_ADDRESS
 
-rvtest_mcounteren_write:
-        // Write the value supported by the physical CSR.
-        csrw    CSR_MCOUNTEREN, a1
-
-        // Preserve the complete value requested by the test, including TM.
-        LA(     a0, Mmcounteren_shadow)
-        SREG    a1, 0(a0)
-        ret
-
-rvtest_mcounteren_set:
-        // Apply the set operation to hardware.
-        csrs    CSR_MCOUNTEREN, a1
-
-        // Apply the same operation to the software shadow.
-        LA(     a0, Mmcounteren_shadow)
-        LREG    a2, 0(a0)
-        or      a2, a2, a1
-        SREG    a2, 0(a0)
-        ret
-
-rvtest_mcounteren_clear:
-        // Apply the clear operation to hardware.
-        csrc    CSR_MCOUNTEREN, a1
-
-        // Apply: shadow = shadow & ~mask.
-        LA(     a0, Mmcounteren_shadow)
-        LREG    a2, 0(a0)
-        not     a1, a1
-        and     a2, a2, a1
-        SREG    a2, 0(a0)
-        ret
-
-
-rvtest_scounteren_write:
-        // Write the value supported by the physical CSR.
-        csrw    CSR_SCOUNTEREN, a1
-
-        // Preserve the complete requested value, including TM.
-        LA(     a0, Mscounteren_shadow)
-        SREG    a1, 0(a0)
-        ret
-
-rvtest_scounteren_set:
-        // Apply the set operation to hardware.
-        csrs    CSR_SCOUNTEREN, a1
-
-        // Apply the same operation to the software shadow.
-        LA(     a0, Mscounteren_shadow)
-        LREG    a2, 0(a0)
-        or      a2, a2, a1
-        SREG    a2, 0(a0)
-        ret
-
-rvtest_scounteren_clear:
-        // Apply the clear operation to hardware.
-        csrc    CSR_SCOUNTEREN, a1
-
-        // Apply: shadow = shadow & ~mask.
-        LA(     a0, Mscounteren_shadow)
-        LREG    a2, 0(a0)
-        not     a1, a1
-        and     a2, a2, a1
-        SREG    a2, 0(a0)
-        ret
+tsbi_time_read_backend:
+        LI(     T4, RVMODEL_MTIME_ADDRESS)
+#if (UDB_MXLEN==64)
+        ld      T1, 0(T4)
+#else
+#error "Initial T-SBI time emulation supports RV64 only"
+#endif
+        jr      T3
 
 #endif
 .endif
@@ -3352,13 +3242,6 @@ rvtest_\__MODE__\()end:                            // epilog is done for this mo
 // (goto_lower_sv_off): T1, T2, T4, T3. None of these uses can be active at
 // the same time.
 \__MODE__\()rvmodel_sv:    .fill   8, REGWIDTH, 0xdeadbeef                   // RVMODEL/T-SBI scratch area
-
-#ifdef RVTEST_TIME_CSR_EMULATION
-\__MODE__\()mcounteren_shadow:      .fill 1, REGWIDTH, 0
-\__MODE__\()scounteren_shadow:      .fill 1, REGWIDTH, 0
-\__MODE__\()time_emulation_pending: .fill 1, REGWIDTH, 0
-#endif
-
 \__MODE__\()sv_area_end:                           // end marker (used for size calculation assertions)
 
 .option pop
