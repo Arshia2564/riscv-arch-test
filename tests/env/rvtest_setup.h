@@ -804,6 +804,13 @@
     // higher bits are reserved or custom
     li t0, 0x0FCB5FF
     li t0, 0x0FCB05D # *** dh 4/24/26 temporary don't delegate any ecalls until SBI forwarding is implemented
+#if !defined(UDB_TIME_CSR_IMPLEMENTED) && defined(RVMODEL_MTIME_ADDRESS)
+    // The hardware has no time CSR. Let M-mode inspect illegal instructions
+    // so the execution environment can emulate trapped reads of time.
+    li t1, ~(1 << CAUSE_ILLEGAL_INSTRUCTION)
+    and t0, t0, t1
+#endif
+
     csrw medeleg, t0
 
     // Delegate supervisor interrupts to S-mode. Do not delege M-mode interrupts.

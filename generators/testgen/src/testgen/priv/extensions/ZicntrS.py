@@ -409,6 +409,7 @@ def _generate_mcounter_inc_inaccessible_tests(test_data: TestData) -> list[str]:
     "ZicntrS",
     required_extensions=["S", "Zicntr"],
     march_extensions=["Zicntr", "Zihpm"],
+    extra_defines=["#define RVTEST_TIME_CSR_TRAP_EMULATION"],
 )
 def make_zicntrs(test_data: TestData) -> list[TestChunk]:
     """Generate tests for ZicntrS coverpoints"""

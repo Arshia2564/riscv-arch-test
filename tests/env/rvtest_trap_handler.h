@@ -136,7 +136,6 @@
 #ifndef T6
   #define T6      x15                            // handler temporary 6
 #endif
-
 //==============================================================================
 // SECTION 2: ARCHITECTURE CONSTANTS
 //
@@ -838,7 +837,6 @@
         #define  RVMODEL_CLR_VEXT_INT    RVTEST_DFLT_INT_HNDLR  // VS-mode ext interrupt clear: abort
 #endif
 
-
 //==============================================================================
 //==============================================================================
 //
@@ -1166,14 +1164,211 @@ common_\__MODE__\()entry:                        // common entry for all traps i
         SREG    T2, trap_sv_off+2*REGWIDTH(sp)  // save T2 (x7)
         SREG    T1, trap_sv_off+1*REGWIDTH(sp)  // save T1 (x6)
 
-        // ---- Global trap counter: shared by every privilege mode's handler ----
-        // T1..T4 were just saved above, so they are free scratch here.
-        LA(     T1, rvtest_trap_count)          // T1 = address of trap_count
-        LREG    T2, 0(T1)                        // T2 = current count
-        addi    T2, T2, 1                         // count++
-        SREG    T2, 0(T1)                        // store back
-
         csrr    T5, CSR_XCAUSE                   // T5 = xcause (T5 is x14, so caller's a0 is NOT disturbed)
+
+.ifc \__MODE__ , M
+#if !defined(UDB_TIME_CSR_IMPLEMENTED) && defined(RVMODEL_MTIME_ADDRESS)
+
+        // Only consider illegal-instruction exceptions.
+        LI(     T4, CAUSE_ILLEGAL_INSTRUCTION)
+        bne     T5, T4, Mtime_s_not_emulated
+
+        // Fetch the 32-bit instruction at mepc.
+        // This focused ZicntrS test executes without address translation.
+        csrr    T3, CSR_MEPC
+#if (UDB_MXLEN==64)
+        lwu     T2, 0(T3)
+#else
+        lw      T2, 0(T3)
+#endif
+
+        // Check opcode[6:0] = SYSTEM, 0x73.
+        andi    T4, T2, 0x7f
+        LI(     T3, 0x73)
+        bne     T4, T3, Mtime_s_not_emulated
+
+        // Check funct3 = CSRRS, the form used by:
+        // csrr rd,time  ==  csrrs rd,time,x0
+        srli    T4, T2, 12
+        andi    T4, T4, 7
+        LI(     T3, 2)
+        bne     T4, T3, Mtime_s_not_emulated
+
+        // Check rs1 = x0. This ensures it is a pure CSR read.
+        srli    T4, T2, 15
+        andi    T4, T4, 31
+        bnez    T4, Mtime_s_not_emulated
+
+        // Check CSR[11:0] = time, 0xC01.
+        srli    T4, T2, 20
+        LI(     T3, CSR_TIME)
+        bne     T4, T3, Mtime_s_not_emulated
+
+        // M-mode accesses are not restricted by counteren CSRs. S-mode requires
+        // mcounteren.TM, while U-mode requires both mcounteren.TM and
+        // scounteren.TM. If a required bit is clear, leave the exception visible
+        // to the ordinary trap-signature path below (which also increments
+        // rvtest_trap_count). Reading the implemented CSRs directly avoids
+        // software shadows of mcounteren and scounteren.
+        csrr    T4, CSR_MSTATUS
+        LI(     T3, MSTATUS_MPP)
+        and     T3, T4, T3             // T3 = originating privilege in MPP
+        LI(     T4, MSTATUS_MPP)
+        beq     T3, T4, Mtime_access_permitted
+
+        csrr    T4, CSR_MCOUNTEREN
+        andi    T4, T4, (1 << 1)       // mcounteren.TM
+        beqz    T4, Mtime_s_not_emulated
+
+        // When S-mode exists, scounteren additionally controls U-mode access.
+        // S-mode reaches emulation as soon as mcounteren.TM is set.
+#ifdef S_SUPPORTED
+        LI(     T4, MPP_SMODE)
+        beq     T3, T4, Mtime_access_permitted
+
+        csrr    T4, CSR_SCOUNTEREN
+        andi    T4, T4, (1 << 1)       // scounteren.TM
+        beqz    T4, Mtime_s_not_emulated
+#endif
+
+Mtime_access_permitted:
+        // The platform exposes time through MMIO rather than CSR_TIME.
+        // Read mtime through an internal subroutine. No nested ecall is needed
+        // because the illegal-instruction handler is already in M-mode.
+        jal     T3, time_csr_read_backend
+
+        // Skip the faulting 32-bit CSR instruction.
+        csrr    T3, CSR_MEPC
+        addi    T3, T3, 4
+        csrw    CSR_MEPC, T3
+
+        // Extract rd from instruction bits 11:7.
+        //
+        // Each dispatch-table entry is 8 bytes: one result operation
+        // followed by one jump. Therefore rd * 8 selects its entry.
+        srli    T2, T2, 7
+        andi    T2, T2, 31
+        slli    T2, T2, 3
+
+        LA(     T3, Mtime_rd_table)
+        add     T3, T3, T2
+        jr      T3
+
+        // Every table entry must remain exactly two 32-bit instructions.
+        // The surrounding trap handler uses .option norvc.
+        .balign 8
+Mtime_rd_table:
+        nop
+        j       Mtime_emulated_return       // x0: discard result
+
+        mv      x1, T1
+        j       Mtime_emulated_return       // x1
+
+        SREG    T1, trap_sv_off+7*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x2/sp
+
+        mv      x3, T1
+        j       Mtime_emulated_return       // x3
+
+        mv      x4, T1
+        j       Mtime_emulated_return       // x4
+
+        mv      x5, T1
+        j       Mtime_emulated_return       // x5
+
+        SREG    T1, trap_sv_off+1*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x6/T1
+
+        SREG    T1, trap_sv_off+2*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x7/T2
+
+        SREG    T1, trap_sv_off+3*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x8/T3
+
+        SREG    T1, trap_sv_off+4*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x9/T4
+
+        mv      x10, T1
+        j       Mtime_emulated_return
+
+        mv      x11, T1
+        j       Mtime_emulated_return
+
+        mv      x12, T1
+        j       Mtime_emulated_return
+
+        mv      x13, T1
+        j       Mtime_emulated_return
+
+        SREG    T1, trap_sv_off+5*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x14/T5
+
+        SREG    T1, trap_sv_off+6*REGWIDTH(sp)
+        j       Mtime_emulated_return       // x15/T6
+
+        mv      x16, T1
+        j       Mtime_emulated_return
+
+        mv      x17, T1
+        j       Mtime_emulated_return
+
+        mv      x18, T1
+        j       Mtime_emulated_return
+
+        mv      x19, T1
+        j       Mtime_emulated_return
+
+        mv      x20, T1
+        j       Mtime_emulated_return
+
+        mv      x21, T1
+        j       Mtime_emulated_return
+
+        mv      x22, T1
+        j       Mtime_emulated_return
+
+        mv      x23, T1
+        j       Mtime_emulated_return
+
+        mv      x24, T1
+        j       Mtime_emulated_return
+
+        mv      x25, T1
+        j       Mtime_emulated_return
+
+        mv      x26, T1
+        j       Mtime_emulated_return
+
+        mv      x27, T1
+        j       Mtime_emulated_return
+
+        mv      x28, T1
+        j       Mtime_emulated_return
+
+        mv      x29, T1
+        j       Mtime_emulated_return
+
+        mv      x30, T1
+        j       Mtime_emulated_return
+
+        mv      x31, T1
+        j       Mtime_emulated_return
+
+Mtime_emulated_return:
+        j       resto_\__MODE__\()rtn
+
+Mtime_s_not_emulated:
+        // Any unrelated illegal instruction continues through the ordinary
+        // visible-trap path.
+
+#endif
+.endif
+
+        // ---- Global trap counter: shared by every privilege mode's handler ----
+        LA(     T1, rvtest_trap_count)
+        LREG    T2, 0(T1)
+        addi    T2, T2, 1
+        SREG    T2, 0(T1)
 
 //==============================================================================
 // T-SBI DISPATCH — M-MODE
@@ -1981,6 +2176,18 @@ sv_\__MODE__\()vect:
         and     T3, T2, T3
         or      T3, T6, T3                      // merge with other bits
 
+// A trap-and-emulate implementation of CSR_TIME necessarily executes mret,
+// which sets mstatus.MPIE. Sail implements CSR_TIME directly, so that
+// M-private side effect is absent from its later trap signatures. Zicntr does
+// not test MPIE; normalize only its M-mode signature word so the execution
+// environment remains invisible without keeping counteren or pending shadows.
+.ifc \__MODE__ , M
+#if defined(RVTEST_TIME_CSR_TRAP_EMULATION) && !defined(UDB_TIME_CSR_IMPLEMENTED)
+        LI(     T2, ~(1 << 20))                   // xstatus bit 7 is packed at bit 20
+        and     T3, T3, T2
+#endif
+.endif
+
 //if  MMode and RV32 move mstatush[ 7: 6] into bit 15:14
 //if  MMode and RV64 move mstatus [39:38] into bit 15:14
 //if HSMode          move hstatus [ 8: 6] into bit 16:14
@@ -2618,6 +2825,29 @@ rtn_fm_mmode:
         jr      4(T2)                                 // jump to ecall+4 in M-mode address space
 
 .endif  // end of M-mode rtn2mmode
+
+//==============================================================================
+// TIME CSR EMULATION BACKEND
+//
+// Called internally by the transparent illegal-instruction emulation path.
+// T3 is the link register, T4 is scratch, and T1 receives the time value.
+// No nested ecall is needed because the caller is already in M-mode.
+//==============================================================================
+
+.ifc \__MODE__ , M
+#ifdef RVMODEL_MTIME_ADDRESS
+
+time_csr_read_backend:
+        LI(     T4, RVMODEL_MTIME_ADDRESS)
+#if (UDB_MXLEN==64)
+        ld      T1, 0(T4)
+#else
+#error "Initial time CSR emulation supports RV64 only"
+#endif
+        jr      T3
+
+#endif
+.endif
 
 //==============================================================================
 // GOTO_SMODE RETURN HANDLER (S-mode only, legacy a0==0 path)
