@@ -1204,9 +1204,35 @@ common_\__MODE__\()entry:                        // common entry for all traps i
         LI(     T3, CSR_TIME)
         bne     T4, T3, Mtime_s_not_emulated
 
-        // The platform exposes time through MMIO rather than CSR_TIME. Any
-        // trapped architectural read is serviced identically; no software
-        // shadow of mcounteren/scounteren is required.
+        // M-mode accesses are not restricted by counteren CSRs. S-mode requires
+        // mcounteren.TM, while U-mode requires both mcounteren.TM and
+        // scounteren.TM. If a required bit is clear, leave the exception visible
+        // to the ordinary trap-signature path below (which also increments
+        // rvtest_trap_count). Reading the implemented CSRs directly avoids
+        // software shadows of mcounteren and scounteren.
+        csrr    T4, CSR_MSTATUS
+        LI(     T3, MSTATUS_MPP)
+        and     T3, T4, T3             // T3 = originating privilege in MPP
+        LI(     T4, MSTATUS_MPP)
+        beq     T3, T4, Mtime_access_permitted
+
+        csrr    T4, CSR_MCOUNTEREN
+        andi    T4, T4, (1 << 1)       // mcounteren.TM
+        beqz    T4, Mtime_s_not_emulated
+
+        // When S-mode exists, scounteren additionally controls U-mode access.
+        // S-mode reaches emulation as soon as mcounteren.TM is set.
+#ifdef S_SUPPORTED
+        LI(     T4, MPP_SMODE)
+        beq     T3, T4, Mtime_access_permitted
+
+        csrr    T4, CSR_SCOUNTEREN
+        andi    T4, T4, (1 << 1)       // scounteren.TM
+        beqz    T4, Mtime_s_not_emulated
+#endif
+
+Mtime_access_permitted:
+        // The platform exposes time through MMIO rather than CSR_TIME.
         // Read mtime through an internal subroutine. No nested ecall is needed
         // because the illegal-instruction handler is already in M-mode.
         jal     T3, time_csr_read_backend
