@@ -101,7 +101,6 @@
 //    TSBI_GOTO_UMODE  (a0=3)          — Switch caller to U-mode
 //    TSBI_GOTO_VSMODE (a0=4)          — Switch caller to VS-mode (H required)
 //    TSBI_GOTO_VUMODE (a0=5)          — Switch caller to VU-mode (H required)
-//    TSBI_READ_TIME   (a0=6)          — Read the platform time source in M-mode
 //    TSBI_ECALL_TEST  (a0=0x73)       — Test ecall path; returns xEPC in a0
 //    CSR_ACCESS       (a0=CSR opcode) — Execute CSR instruction; rd must be a0
 //    Any other value                  — Returns -1 in a0 (TSBI_RESERVED_RET)
@@ -109,8 +108,7 @@
 //  Dispatch hierarchy:
 //    M-mode handler:  handles all operations directly
 //    S-mode handler:  handles ECALL_TEST, GOTO_S/U, S-mode CSR_ACCESS locally;
-//                     forwards READ_TIME, GOTO_M/VS/VU, and M-mode CSR_ACCESS
-//                     to M-mode via ecall
+//                     forwards GOTO_M/VS/VU and M-mode CSR_ACCESS to M-mode via ecall
 //
 //************************************************************************************
 
@@ -169,7 +167,6 @@
 //
 // Design rationale for the operation code values:
 //   - GOTO_xMODE uses small integers (1-5) for easy range checking
-//   - READ_TIME uses the next small integer (6) and is always serviced in M-mode
 //   - ECALL_TEST uses the ecall instruction encoding (0x73) itself, which is
 //     mnemonic and doesn't conflict with GOTO codes or CSR encodings
 //   - CSR_ACCESS uses the actual CSR instruction encoding (opcode 0x73 with
@@ -179,10 +176,9 @@
 //
 // Dispatch order in the handler:
 //   1. If (a0-1) < 5  -> GOTO_xMODE      (a0 in range [1..5])
-//   2. If a0 == 6     -> READ_TIME       (M-mode platform time service)
-//   3. If a0 == 0x73  -> ECALL_TEST      (exact match on ecall encoding)
-//   4. If a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (SYSTEM opcode with funct3)
-//   5. Otherwise       -> RESERVED        (return -1)
+//   2. If a0 == 0x73  -> ECALL_TEST      (exact match on ecall encoding)
+//   3. If a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (SYSTEM opcode with funct3)
+//   4. Otherwise       -> RESERVED        (return -1)
 //==============================================================================
 
 #define ALT_GOTO_MMODE      0x00000000           // a0 value: Used by RVTEST_GOTO_DELEGATED_MMODE
@@ -191,7 +187,6 @@
 #define TSBI_GOTO_UMODE     0x00000003           // a0 value: switch to User mode
 #define TSBI_GOTO_VSMODE    0x00000004           // a0 value: switch to Virtual Supervisor mode (requires H)
 #define TSBI_GOTO_VUMODE    0x00000005           // a0 value: switch to Virtual User mode (requires H)
-#define TSBI_READ_TIME      0x00000006           // a0 value: read the platform time source
 #define TSBI_ECALL_TEST     0x00000073           // a0 value: test ecall trap path, returns xEPC in a0
 
 // CSR_ACCESS is not a single #define — it's any value where:
@@ -465,7 +460,6 @@
 // Usage in tests:
 //   RVTEST_TSBI_GOTO_MMODE              // switch to M-mode, clobbers a0
 //   RVTEST_TSBI_GOTO_UMODE              // switch to U-mode, clobbers a0
-//   RVTEST_TSBI_READ_TIME t0             // read platform time into t0, clobbers a0
 //   RVTEST_TSBI_ECALL_TEST              // test ecall path, result in a0
 //   RVTEST_TSBI_CSR_ACCESS 0x30052573, zero  // read mstatus into a0
 //
@@ -501,22 +495,6 @@
   .option norvc                                  // ensure consistent code size
   li   a0, TSBI_GOTO_UMODE                      // a0 = 3 (GOTO_UMODE operation code)
   ecall                                          // trap to handler; handler sets MPP=U, mrets
-  .option pop
-.endm
-
-// Read the platform time source through T-SBI.
-//
-// This is primarily a diagnostic/service macro. Zicntr tests must continue to
-// execute `csrr rd, time`; the transparent illegal-instruction path below uses
-// the same M-mode backend when CSR_TIME is implemented by trap-and-emulate.
-//
-// CLOBBERS: a0. PRESERVES: all other registers, except when rd is one of them.
-.macro RVTEST_TSBI_READ_TIME rd=a0
-  .option push
-  .option norvc
-  li   a0, TSBI_READ_TIME
-  ecall
-  mv   \rd, a0
   .option pop
 .endm
 
@@ -1229,9 +1207,9 @@ common_\__MODE__\()entry:                        // common entry for all traps i
         // The platform exposes time through MMIO rather than CSR_TIME. Any
         // trapped architectural read is serviced identically; no software
         // shadow of mcounteren/scounteren is required.
-        // Use the internal T-SBI time backend. This is a normal subroutine,
-        // not a nested ecall: the illegal-instruction handler is already in M.
-        jal     T3, tsbi_time_read_backend
+        // Read mtime through an internal subroutine. No nested ecall is needed
+        // because the illegal-instruction handler is already in M-mode.
+        jal     T3, time_csr_read_backend
 
         // Skip the faulting 32-bit CSR instruction.
         csrr    T3, CSR_MEPC
@@ -1376,10 +1354,9 @@ Mtime_s_not_emulated:
 //   4. NEW: Dispatch on the caller's a0 (still live — the handler never
 //      touches a0/a1):
 //      a. a0 in [1..5] -> GOTO_xMODE (set MPP/MPV, bump mepc, mret)
-//      b. a0 == 6      -> READ_TIME (read the M-mode platform time source)
-//      c. a0 == 0x73   -> ECALL_TEST (return xEPC in a0, bump mepc)
-//      d. a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (execute dynamic CSR instr)
-//      e. Otherwise    -> RESERVED (return -1 in a0)
+//      b. a0 == 0x73   -> ECALL_TEST (return xEPC in a0, bump mepc)
+//      c. a0[6:0]==0x73 && a0[14:12]!=0 -> CSR_ACCESS (execute dynamic CSR instr)
+//      d. Otherwise    -> RESERVED (return -1 in a0)
 //   5. If not an SBI call: fall through to normal trap signature recording
 //
 // REGISTER STATE:
@@ -1441,31 +1418,12 @@ tsbi_\__MODE__\()dispatch:
         li      T2, 5                              // T2 = 5 (upper bound)
         bltu    T4, T2, tsbi_\__MODE__\()goto_mode // if (a0-1) < 5 -> a0 in [1..5] -> GOTO_xMODE dispatch
 
-        // --- Check for READ_TIME (a0 == 6) ---
-        LI(     T2, TSBI_READ_TIME)
-        beq     a0, T2, tsbi_\__MODE__\()read_time
-
         // --- Check for ECALL_TEST (a0 == 0x00000073) ---
         LI(     T2, TSBI_ECALL_TEST)              // T2 = 0x73 (ECALL_TEST operation code)
         beq     a0, T2, tsbi_\__MODE__\()ecall_test // if caller_a0 == 0x73 -> ECALL_TEST handler
 
         // Otherwise consult dispatch table
         j tsbi_instr_table_dispatch
-
-        //--------------------------------------------------------------
-        // T-SBI READ_TIME handler (M-mode)
-        //--------------------------------------------------------------
-tsbi_\__MODE__\()read_time:
-#ifdef RVMODEL_MTIME_ADDRESS
-        jal     T3, tsbi_time_read_backend         // T1 = platform time value
-        mv      a0, T1                             // T-SBI result register
-#else
-        li      a0, TSBI_RESERVED_RET
-#endif
-        csrr    T3, CSR_XEPC
-        addi    T3, T3, 4                          // skip the caller's ecall
-        csrw    CSR_XEPC, T3
-        j       resto_\__MODE__\()rtn
 
         //--------------------------------------------------------------
         // T-SBI ECALL_TEST handler (M-mode)
@@ -1624,7 +1582,6 @@ tsbi_\__MODE__\()goto_vu:
 //   - GOTO_MMODE:  needs M-mode to set MPP
 //   - GOTO_VSMODE: needs M-mode to set MPV  TODO: can do with SPV
 //   - GOTO_VUMODE: needs M-mode to set MPV  TODO: can do with SPV
-//   - READ_TIME:   needs access to the M-mode platform time source
 //   - CSR_ACCESS for M-mode CSRs: needs M-mode privilege (CSR addr[9:8] == 11)
 //
 // FORWARDING MECHANISM:
@@ -1660,11 +1617,6 @@ tsbi_\__MODE__\()dispatch:
         addi    T4, a0, -1                         // T4 = a0 - 1
         li      T2, 5                               // T2 = 5
         bltu    T4, T2, tsbi_\__MODE__\()goto_mode // a0 in [1..5] -> GOTO dispatch
-
-        // READ_TIME is always serviced by M-mode. Advance the U-mode EPC
-        // before forwarding so the final sret resumes after the original ecall.
-        LI(     T2, TSBI_READ_TIME)
-        beq     a0, T2, tsbi_\__MODE__\()forward_time
 
         // Check for ECALL_TEST (a0 == 0x73)
         LI(     T2, TSBI_ECALL_TEST)              // T2 = 0x73
@@ -1728,12 +1680,6 @@ tsbi_\__MODE__\()goto_u:                          // Return to U-mode via sret
         LI(     T3, SSTATUS_SPP)                   // T3 = SPP bit mask
         csrc    CSR_XSTATUS, T3                     // clear sstatus.SPP = 0 (sret -> U-mode)
         j       resto_\__MODE__\()rtn              // sret returns to U-mode at sepc
-
-tsbi_\__MODE__\()forward_time:
-        csrr    T3, CSR_XEPC
-        addi    T3, T3, 4                          // skip the U-mode ecall
-        csrw    CSR_XEPC, T3
-        j       tsbi_\__MODE__\()forward_to_m
 
         //--- S-mode forwarding to M-mode ---
         // Restore all handler regs and ecall. M-mode handler processes the request.
@@ -2855,7 +2801,7 @@ rtn_fm_mmode:
 .endif  // end of M-mode rtn2mmode
 
 //==============================================================================
-// T-SBI TIME BACKEND
+// TIME CSR EMULATION BACKEND
 //
 // Called internally by the transparent illegal-instruction emulation path.
 // T3 is the link register, T4 is scratch, and T1 receives the time value.
@@ -2865,12 +2811,12 @@ rtn_fm_mmode:
 .ifc \__MODE__ , M
 #ifdef RVMODEL_MTIME_ADDRESS
 
-tsbi_time_read_backend:
+time_csr_read_backend:
         LI(     T4, RVMODEL_MTIME_ADDRESS)
 #if (UDB_MXLEN==64)
         ld      T1, 0(T4)
 #else
-#error "Initial T-SBI time emulation supports RV64 only"
+#error "Initial time CSR emulation supports RV64 only"
 #endif
         jr      T3
 
