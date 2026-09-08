@@ -10,10 +10,10 @@ description: >
     1. DTS confirmed — extension appears in the K1 Linux device tree ISA string.
     2. Spec-defined implication — ISA spec requires these to be present given a confirmed extension.
     3. Behavioral inference — Linux boots on K1; U-mode, S-mode, Sv39, Svbare are required for that.
-  Extensions that are NOT in the DTS and cannot be inferred are excluded.
-  They require ACT tests on real hardware to verify (Za64rs, Za128rs, Zic64b,
-  Ziccamoa/if/clsm/crse, Ssccptr, Sstvala, Sstvecd, Svade, scalar crypto, H,
-  Zfh, Zfhmin, Zkt, Svinval, Svnapot, Zvfh, Zvfhmin, Zvkt, Sv48).
+  Extensions that are NOT in the reported board ISA string and cannot be
+  inferred are excluded. The configured test target follows the BPI-F3 ISA
+  string supplied for this hardware run, including half-precision floating
+  point, vector-half, vector-crypto timing, Svinval, and Svnapot.
   Sv48 was previously listed as "community confirmed" but the official X60
   datasheet and a real boot log's mmu-type both show Sv39 only - removed.
   Zicntr/Zihpm are not in the DTS but are included anyway: OpenSBI's boot-time
@@ -27,6 +27,8 @@ implemented_extensions:
   - { name: A,  version: "= 2.1.0" }
   - { name: F,  version: "= 2.2.0" }
   - { name: D,  version: "= 2.2.0" }
+  - { name: Zfh, version: "= 1.0.0" }
+  - { name: Zfhmin, version: "= 1.0.0" }
   - { name: C,  version: "= 2.0" }
   - { name: B,  version: "= 1.0.0" }
   - { name: V,  version: "= 1.0.0" }
@@ -45,6 +47,7 @@ implemented_extensions:
   - { name: Zbb, version: "= 1.0.0" }
   - { name: Zbc, version: "= 1.0.0" }
   - { name: Zbs, version: "= 1.0.0" }
+  - { name: Zkt, version: "= 1.0.0" }
 
   # --- Compressed (spec-implied from C) ---
   - { name: Zca, version: "= 1.0.0" }
@@ -70,10 +73,12 @@ implemented_extensions:
   - { name: Sscofpmf, version: "= 1.0.0" }
   - { name: Sstc,     version: "= 1.0.0" }
   - { name: Sscounterenw, version: "= 1.0.0" }
+  - { name: Svinval, version: "= 1.0.0" }
 
   # --- Virtual memory (DTS confirmed / behavioral inference) ---
   - { name: Sv39,    version: "= 1.0.0" }   # behavioral inference (Linux boot)
   - { name: Svbare,  version: "= 1.0.0" }   # behavioral inference (Linux boot)
+  - { name: Svnapot, version: "= 1.0.0" }
   - { name: Svpbmt,  version: "= 1.0.0" }   # DTS confirmed
 
   # --- Vector subsets (spec-implied from V + F + D, VLEN=256) ---
@@ -82,6 +87,9 @@ implemented_extensions:
   - { name: Zve64x,  version: "= 1.0.0" }
   - { name: Zve64f,  version: "= 1.0.0" }
   - { name: Zve64d,  version: "= 1.0.0" }
+  - { name: Zvfh,    version: "= 1.0.0" }
+  - { name: Zvfhmin, version: "= 1.0.0" }
+  - { name: Zvkt,    version: "= 1.0.0" }
   - { name: Zvl32b,  version: "= 1.0.0" }
   - { name: Zvl64b,  version: "= 1.0.0" }
   - { name: Zvl128b, version: "= 1.0.0" }
