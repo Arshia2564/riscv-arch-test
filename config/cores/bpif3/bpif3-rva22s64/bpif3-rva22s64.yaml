@@ -23,6 +23,7 @@ description: >
 implemented_extensions:
   - { name: I,  version: "= 2.1" }
   - { name: M,  version: "= 2.0" }
+  - { name: Zmmul, version: "= 1.0.0" }
   - { name: A,  version: "= 2.1.0" }
   - { name: F,  version: "= 2.2.0" }
   - { name: D,  version: "= 2.2.0" }
@@ -174,8 +175,8 @@ params:
       false, # 30
       false, # 31
     ]
-  STVEC_MODE_DIRECT: true
-  STVEC_MODE_VECTORED: true
+  STVEC_MODES: [0, 1]
+  STVEC_BASE_ALIGNMENT_VECTORED: 4
   SATP_MODE_BARE: true
   TRAP_ON_ECALL_FROM_S: true
   MSTATUS_VS_LEGAL_VALUES: [0, 1, 2, 3]
@@ -260,38 +261,38 @@ params:
   MCOUNTINHIBIT_IMPLEMENTED: true
   COUNTINHIBIT_EN:
     [
-      true,
-      false,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
+      true,  # 0: cycle
+      false, # 1: time has no mcountinhibit bit
+      true,  # 2: instret
+      true,  # 3
+      true,  # 4
+      true,  # 5
+      true,  # 6
+      true,  # 7
+      true,  # 8
+      true,  # 9
+      true,  # 10
+      true,  # 11
+      true,  # 12
+      true,  # 13
+      true,  # 14
+      true,  # 15
+      true,  # 16
+      true,  # 17
+      true,  # 18
+      false, # 19: corresponding HPM counter is not implemented
+      false, # 20
+      false, # 21
+      false, # 22
+      false, # 23
+      false, # 24
+      false, # 25
+      false, # 26
+      false, # 27
+      false, # 28
+      false, # 29
+      false, # 30
+      false, # 31
     ]
   MCOUNTENABLE_EN:
     [
