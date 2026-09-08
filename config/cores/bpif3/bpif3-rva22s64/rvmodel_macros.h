@@ -36,6 +36,8 @@
 #define K1_MTIME_ADDRESS    0xE400BFF8
 #define K1_MTIMECMP_ADDRESS 0xE4004000
 
+#define RVMODEL_STVEC_BASE_ALIGNMENT_VECTORED 4
+
 #ifndef BOARD_FIXED_TOHOST_ADDR
 #define BOARD_FIXED_TOHOST_ADDR 0x04100000
 #endif
@@ -104,7 +106,37 @@ tohost:                                  \
 
 #define RVMODEL_ACCESS_FAULT_ADDRESS 0x00000000
 
+#define RVMODEL_MTIME_ADDRESS _k1_mtime
 #define RVMODEL_MTIMECMP_ADDRESS _k1_mtimecmp
+
+// ACT's default LA macro is PC-relative and cannot reach the K1 CLINT above
+// 0x80000000 from the test image at 0x04200000. Preserve its fixed-size
+// behavior for ordinary labels, but materialize the two CLINT addresses as
+// zero-extended 32-bit constants. sail_macros.h replaces these symbols with
+// Sail's low CLINT addresses for signature/reference builds.
+#undef LA
+#define LA(_REG, _VAL)                              ;\
+    .ifnc(_REG, X0)                                ;\
+      .option push                                 ;\
+      .option rvc                                  ;\
+      .p2align UNROLLSZ                            ;\
+      .option norvc                                ;\
+      .ifc _VAL, _k1_mtime                         ;\
+        LOAD_ADDR32(_REG, K1_MTIME_ADDRESS)        ;\
+      .else                                        ;\
+        .ifc _VAL, (SAIL_CLINT_BASE_ADDRESS + 0xBFF8) ;\
+          LOAD_ADDR32(_REG, K1_MTIME_ADDRESS)      ;\
+        .else                                      ;\
+          .ifc _VAL, _k1_mtimecmp                  ;\
+            LOAD_ADDR32(_REG, K1_MTIMECMP_ADDRESS) ;\
+          .else                                    ;\
+            la _REG, _VAL                          ;\
+          .endif                                   ;\
+        .endif                                     ;\
+      .endif                                       ;\
+      .p2align UNROLLSZ                            ;\
+      .option pop                                  ;\
+    .endif
 
 #define RVMODEL_LOAD_MTIMECMP_ADDR(_REG) LOAD_ADDR32(_REG, K1_MTIMECMP_ADDRESS)
 

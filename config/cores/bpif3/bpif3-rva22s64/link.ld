@@ -53,4 +53,5 @@ SECTIONS
    * addresses with bit 31 set. The section holds no bytes; only the
    * symbol VMA matters. */
   .k1_periph_mtimecmp 0xE4004000 (NOLOAD) : { _k1_mtimecmp = .; }
+  .k1_periph_mtime 0xE400BFF8 (NOLOAD) : { _k1_mtime = .; }
 }
