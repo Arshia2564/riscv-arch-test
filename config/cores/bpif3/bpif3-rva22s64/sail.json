@@ -1,5 +1,4 @@
 {
-  "$schema": "/opt/riscv/share/sail-riscv/sail_riscv_config_schema.json",
   "base": {
     "xlen": 64,
     "E": false,
@@ -16,6 +15,10 @@
     "mcounteren_writable_bits": {
       "len": 32,
       "value": "0x0007_FFFF"
+    },
+    "hcounteren_writable_bits": {
+      "len": 32,
+      "value": "0xFFFF_FFFF"
     },
     "mtvec": {
       "direct": {
@@ -36,29 +39,14 @@
         "base_alignment": 2
       }
     },
-    "xtval_nonzero": {
-      "illegal_instruction": true,
-      "software_breakpoint": true,
-      "hardware_breakpoint": true,
-      "load_address_misaligned": true,
-      "load_access_fault": true,
-      "load_page_fault": true,
-      "samo_address_misaligned": true,
-      "samo_access_fault": true,
-      "samo_page_fault": true,
-      "fetch_address_misaligned": true,
-      "fetch_access_fault": true,
-      "fetch_page_fault": true,
-      "software_check": true,
-      "reserved_exceptions": false
-    },
-    "reserved_behavior": {
-      "amocas_odd_register": "AMOCAS_Illegal",
-      "fcsr_rm": "Fcsr_RM_Illegal",
-      "pmpcfg_write_only": "PMP_ClearPermissions",
-      "xenvcfg_cbie": "Xenvcfg_ClearPermissions",
-      "xtvec_mode": "Xtvec_Ignore",
-      "rv32zdinx_odd_register": "Zdinx_Illegal"
+    "vstvec": {
+      "direct": {
+        "supported": true
+      },
+      "vectored": {
+        "supported": true,
+        "base_alignment": 2
+      }
     },
     "medeleg": {
       "delegatable_bits": {
@@ -72,14 +60,45 @@
         "value": "0x0000_0000_0000_2222"
       }
     },
-    "privileged_isa_version": "Privileged_ISA_1_13",
+    "xtval_nonzero": {
+      "illegal_instruction": true,
+      "virtual_instruction": true,
+      "software_breakpoint": true,
+      "hardware_breakpoint": true,
+      "load_address_misaligned": true,
+      "load_access_fault": true,
+      "load_page_fault": true,
+      "load_guest_page_fault": true,
+      "samo_address_misaligned": true,
+      "samo_access_fault": true,
+      "samo_page_fault": true,
+      "samo_guest_page_fault": true,
+      "fetch_address_misaligned": true,
+      "fetch_access_fault": true,
+      "fetch_page_fault": true,
+      "fetch_guest_page_fault": true,
+      "software_check": true,
+      "hardware_error": true,
+      "reserved_exceptions": false
+    },
+    "reserved_behavior": {
+      "amocas_odd_register": "AMOCAS_Illegal",
+      "fcsr_rm": "Fcsr_RM_Illegal",
+      "pmpcfg_write_only": "PMP_ClearPermissions",
+      "xenvcfg_cbie": "Xenvcfg_ClearPermissions",
+      "xtvec_mode": "Xtvec_Ignore",
+      "rv32zdinx_odd_register": "Zdinx_Illegal"
+    },
     "mstatus": {
       "fs_legal_states": "ExtContext_FourState",
       "vs_legal_states": "ExtContext_FourState"
-    }
+    },
+    "privileged_isa_version": "Privileged_ISA_1_13"
   },
   "memory": {
     "physaddr_bits": 40,
+    "asidlen": 16,
+    "vmidlen": 14,
     "pmp": {
       "grain": 10,
       "count": 64,
@@ -96,14 +115,16 @@
         "vector": {
           "Some": "AccessFault"
         },
-        "lrsc": "AccessFault",
         "amo": {
+          "Some": "AccessFault"
+        },
+        "lrsc": {
           "Some": "AccessFault"
         }
       },
+      "order_decreasing": false,
       "default_allowed_within_exp": 0,
-      "byte_by_byte": false,
-      "order_decreasing": false
+      "byte_by_byte": false
     },
     "dtb_address": {
       "len": 64,
@@ -135,11 +156,12 @@
             "vector": {
               "Some": "AccessFault"
             },
-            "amo": "AccessFault"
+            "amo": "AccessFault",
+            "lrsc": "AccessFault"
           },
+          "atomic_support": "AMOArithmetic",
           "misaligned_atomicity_granule_size_exp": 0,
           "vector_misaligned_atomicity_granule_size_exp": 0,
-          "atomic_support": "AMOArithmetic",
           "reservability": "RsrvEventual",
           "supports_cbo_zero": true,
           "supports_pte_read": true,
@@ -172,17 +194,18 @@
             "vector": {
               "Some": "AccessFault"
             },
-            "amo": "AccessFault"
+            "amo": "AccessFault",
+            "lrsc": "AccessFault"
           },
+          "atomic_support": "AMONone",
           "misaligned_atomicity_granule_size_exp": 0,
           "vector_misaligned_atomicity_granule_size_exp": 0,
-          "atomic_support": "AMONone",
           "reservability": "RsrvNone",
           "supports_cbo_zero": false,
           "supports_pte_read": false,
           "supports_pte_write": false
         },
-        "include_in_device_tree": false
+        "include_in_device_tree": true
       }
     ]
   },
@@ -196,6 +219,19 @@
       "reservation_set_size_exp": 3,
       "require_exact_reservation_addr": false,
       "invalidate_on_same_hart_store": false
+    },
+    "interrupts": {
+      "machine": {
+        "software": {
+          "supported": true
+        },
+        "external": {
+          "supported": true
+        },
+        "timer": {
+          "supported": true
+        }
+      }
     },
     "clint": {
       "supported": true,
@@ -213,9 +249,6 @@
     "max_time_to_wait": 200
   },
   "extensions": {
-    "Zama16b": {
-      "supported": false
-    },
     "M": {
       "supported": true
     },
@@ -250,10 +283,41 @@
       "supported": true
     },
     "S": {
-      "supported": true
+      "supported": true,
+      "interrupts": {
+        "software": {
+          "supported": true
+        },
+        "external": {
+          "supported": true
+        },
+        "timer": {
+          "supported": true
+        }
+      }
     },
     "U": {
       "supported": true
+    },
+    "H": {
+      "supported": true,
+      "geilen": 63,
+      "guest_page_fault_writes_htval": true,
+      "hgatp_modes": {
+        "Sv32x4": false,
+        "Sv39x4": true,
+        "Sv48x4": true,
+        "Sv57x4": true
+      },
+      "vsatp_modes": {
+        "Sv32": false,
+        "Sv39": true,
+        "Sv48": true,
+        "Sv57": true
+      }
+    },
+    "Zibi": {
+      "supported": false
     },
     "Zic64b": {
       "supported": false
@@ -262,12 +326,15 @@
       "supported": true
     },
     "Zicbop": {
-      "supported": true
+      "supported": false
     },
     "Zicboz": {
       "supported": true
     },
     "Ziccamoa": {
+      "supported": false
+    },
+    "Ziccamoc": {
       "supported": false
     },
     "Ziccif": {
@@ -277,6 +344,12 @@
       "supported": false
     },
     "Ziccrse": {
+      "supported": false
+    },
+    "Zicfilp": {
+      "supported": false
+    },
+    "Zicfiss": {
       "supported": false
     },
     "Zicond": {
@@ -291,26 +364,59 @@
     "Zifencei": {
       "supported": true
     },
+    "Zihintntl": {
+      "supported": false
+    },
     "Zihintpause": {
       "supported": true
     },
     "Zihpm": {
       "supported": true
     },
+    "Zilx": {
+      "supported": true
+    },
+    "Zimop": {
+      "supported": false
+    },
+    "Zmmul": {
+      "supported": true
+    },
     "Zaamo": {
       "supported": true
+    },
+    "Zabha": {
+      "supported": false
+    },
+    "Zacas": {
+      "supported": false
     },
     "Zalrsc": {
       "supported": true
     },
+    "Zama16b": {
+      "supported": false
+    },
+    "Zawrs": {
+      "supported": false,
+      "nto": {
+        "is_nop": false
+      },
+      "sto": {
+        "is_nop": false
+      }
+    },
     "Zfa": {
       "supported": false
     },
-    "Zfh": {
+    "Zfbfmin": {
       "supported": false
     },
+    "Zfh": {
+      "supported": true
+    },
     "Zfhmin": {
-      "supported": false
+      "supported": true
     },
     "Zfinx": {
       "supported": false
@@ -328,6 +434,9 @@
       "supported": true
     },
     "Zcb": {
+      "supported": false
+    },
+    "Zcmop": {
       "supported": false
     },
     "Zba": {
@@ -374,7 +483,7 @@
       "supported": false
     },
     "Zkt": {
-      "supported": false
+      "supported": true
     },
     "Zhinx": {
       "supported": false
@@ -382,155 +491,25 @@
     "Zhinxmin": {
       "supported": false
     },
-    "Zvfh": {
-      "supported": false
-    },
-    "Zvfhmin": {
-      "supported": false
-    },
-    "Zvkt": {
-      "supported": false
-    },
-    "Sscofpmf": {
-      "supported": true
-    },
-    "Sscounterenw": {
-      "supported": true
-    },
-    "Ssccptr": {
-      "supported": false
-    },
-    "Sstc": {
-      "supported": true
-    },
-    "Sstvala": {
-      "supported": false
-    },
-    "Svade": {
-      "supported": false
-    },
-    "Svadu": {
-      "supported": false
-    },
-    "Svinval": {
-      "supported": false
-    },
-    "Svnapot": {
-      "supported": false
-    },
-    "Svbare": {
-      "supported": true,
-      "sfence_vma_illegal_if_svbare_only": true
-    },
-    "Sv32": {
-      "supported": false
-    },
-    "Sv39": {
-      "supported": true
-    },
-    "Sv48": {
-      "supported": false
-    },
-    "Sv57": {
-      "supported": false
-    },
-    "Svpbmt": {
-      "supported": true
-    },
-    "Stateen": {
-      "Smstateen": {
-        "supported": false
-      },
-      "Ssstateen": {
-        "supported": false
-      },
-      "C_readonly_zero": true,
-      "SE0_readonly_zero": true
-    },
-    "Ssqosid": {
-      "supported": false,
-      "rcid_length": 1,
-      "mcid_length": 1
-    },
-    "Ssnpm": {
-      "supported": false,
-      "supported_pmlen_7": false,
-      "supported_pmlen_16": false
-    },
-    "Smnpm": {
-      "supported": false,
-      "supported_pmlen_7": false,
-      "supported_pmlen_16": false
-    },
-    "Smmpm": {
-      "supported": false,
-      "supported_pmlen_7": false,
-      "supported_pmlen_16": false
-    },
-    "Smcntrpmf": {
-      "supported": false
-    },
-    "Svrsw60t59b": {
-      "supported": false
-    },
-    "Svvptc": {
-      "supported": false
-    },
-    "Zabha": {
-      "supported": false
-    },
-    "Zacas": {
-      "supported": false
-    },
-    "Zawrs": {
-      "supported": false,
-      "nto": {
-        "is_nop": false
-      },
-      "sto": {
-        "is_nop": false
-      }
-    },
-    "Zcmop": {
-      "supported": false
-    },
-    "Zfbfmin": {
-      "supported": false
-    },
-    "Zibi": {
-      "supported": false
-    },
-    "Ziccamoc": {
-      "supported": false
-    },
-    "Zicfilp": {
-      "supported": false
-    },
-    "Zicfiss": {
-      "supported": false
-    },
-    "Zihintntl": {
-      "supported": false
-    },
-    "Zimop": {
-      "supported": false
-    },
-    "Zmmul": {
-      "supported": false
-    },
     "Zvabd": {
-      "supported": false
-    },
-    "Zvbb": {
-      "supported": false
-    },
-    "Zvbc": {
       "supported": false
     },
     "Zvfbfmin": {
       "supported": false
     },
     "Zvfbfwma": {
+      "supported": false
+    },
+    "Zvfh": {
+      "supported": true
+    },
+    "Zvfhmin": {
+      "supported": true
+    },
+    "Zvbb": {
+      "supported": false
+    },
+    "Zvbc": {
       "supported": false
     },
     "Zvkb": {
@@ -553,6 +532,122 @@
     },
     "Zvksh": {
       "supported": false
+    },
+    "Zvkt": {
+      "supported": true
+    },
+    "Ssccptr": {
+      "supported": false
+    },
+    "Sscofpmf": {
+      "supported": true
+    },
+    "Sha": {
+      "supported": false
+    },
+    "Shcounterenw": {
+      "supported": true
+    },
+    "Sscounterenw": {
+      "supported": false
+    },
+    "Shvsatpa": {
+      "supported": true
+    },
+    "Shvstvala": {
+      "supported": true
+    },
+    "Shvstvecd": {
+      "supported": true
+    },
+    "Sstc": {
+      "supported": true
+    },
+    "Shgatpa": {
+      "supported": true
+    },
+    "Shtvala": {
+      "supported": true
+    },
+    "Sstvala": {
+      "supported": false
+    },
+    "Sstvecd": {
+      "supported": true
+    },
+    "Svade": {
+      "supported": false
+    },
+    "Svadu": {
+      "supported": false
+    },
+    "Svinval": {
+      "supported": true
+    },
+    "Svrsw60t59b": {
+      "supported": false
+    },
+    "Svnapot": {
+      "supported": true
+    },
+    "Svukte": {
+      "supported": true
+    },
+    "Ssnpm": {
+      "supported": false,
+      "supported_pmlen_7": false,
+      "supported_pmlen_16": false
+    },
+    "Smnpm": {
+      "supported": false,
+      "supported_pmlen_7": false,
+      "supported_pmlen_16": false
+    },
+    "Smmpm": {
+      "supported": false,
+      "supported_pmlen_7": false,
+      "supported_pmlen_16": false
+    },
+    "Smcntrpmf": {
+      "supported": false
+    },
+    "Svbare": {
+      "supported": true,
+      "sfence_vma_illegal_if_svbare_only": true
+    },
+    "Sv32": {
+      "supported": false
+    },
+    "Sv39": {
+      "supported": true
+    },
+    "Sv48": {
+      "supported": false
+    },
+    "Sv57": {
+      "supported": false
+    },
+    "Stateen": {
+      "Smstateen": {
+        "supported": false
+      },
+      "Ssstateen": {
+        "supported": false
+      },
+      "C_readonly_zero": true,
+      "SE0_readonly_zero": true
+    },
+    "Ssqosid": {
+      "supported": false,
+      "rcid_length": 1,
+      "mcid_length": 1
+    },
+    "Svpbmt": {
+      "supported": true
+    },
+    "Svvptc": {
+      "supported": false
     }
-  }
+  },
+  "$schema": "/home/lpt-10xe/riscv-sail-0.14/share/sail-riscv/sail_riscv_config_schema.json"
 }

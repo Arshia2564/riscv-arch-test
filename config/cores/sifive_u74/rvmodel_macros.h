@@ -8,19 +8,18 @@
 
 // VF2 U74 WARL-aligns stvec.BASE to 256 bytes when MODE=Vectored.
 // Keep the hardware and Sail signature ELFs on the same safe boundary.
-#define RVMODEL_STVEC_BASE_ALIGNMENT_VECTORED 256
 
 #define CLINT_BASE_ADDRESS 0x02000000
 
 #define RVMODEL_DATA_SECTION \
         .pushsection .tohost,"aw",@progbits;                \
-        .align 8; .global tohost; tohost: .dword 0;         \
-        .align 8; .global fromhost; fromhost: .dword 0;     \
-        .align 8; .global rvmodel_boot_hartid;              \
+        .p2align 8; .global tohost; tohost: .dword 0;       \
+        .p2align 8; .global fromhost; fromhost: .dword 0;   \
+        .p2align 8; .global rvmodel_boot_hartid;            \
         rvmodel_boot_hartid: .dword 0;                      \
-        .align 8; .global rvmodel_last_plic_claim;           \
+        .p2align 8; .global rvmodel_last_plic_claim;         \
         rvmodel_last_plic_claim: .dword 0;                   \
-        .align 8; .global irqdbg_first_valid;                \
+        .p2align 8; .global irqdbg_first_valid;              \
         irqdbg_first_valid: .dword 0;                        \
         .global irqdbg_first_mode; irqdbg_first_mode: .dword 0; \
         .global irqdbg_first_xepc; irqdbg_first_xepc: .dword 0; \
@@ -148,12 +147,12 @@
 
 
 #define RVMODEL_DATA_BEGIN                                            \
-  .align 4;                                                           \
+  .p2align 4;                                                         \
   .global begin_signature;                                            \
   begin_signature:
 
 #define RVMODEL_DATA_END                                              \
-  .align 4;                                                           \
+  .p2align 4;                                                         \
   .global end_signature;                                              \
   end_signature:
 
