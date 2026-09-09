@@ -42,7 +42,7 @@
 
 #define RVMODEL_DATA_SECTION \
     .pushsection .data,"aw",@progbits;  \
-    .align 3;                            \
+    .p2align 3;                          \
     .global tohost;                      \
 tohost:                                  \
     .dword 0;                            \
