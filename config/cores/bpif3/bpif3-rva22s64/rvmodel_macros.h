@@ -102,7 +102,10 @@ tohost:                                  \
 
 ##### Access Fault #####
 
-#define RVMODEL_ACCESS_FAULT_ADDRESS 0x00000000
+// RVMODEL_ACCESS_FAULT_ADDRESS is deliberately not defined, so ACT skips its access-fault
+// subtests (tests/env/check_defines.h). The K1 never raises access faults for plain
+// addresses: 0x0 is DRAM (memory@0), unmapped 0x80_0000_0000 reads bus garbage, and
+// 1 << 40 wraps to 0x0 (csr_probe on the board, 2026-10-05).
 
 // The K1 CLINT is ~3.5 GiB from the test image: ACT must load CLINT addresses absolutely.
 #define RVMODEL_CLINT_ABSOLUTE 1
