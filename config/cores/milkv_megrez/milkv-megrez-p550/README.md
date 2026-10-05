@@ -41,7 +41,7 @@ board), `RV64GC_Zba_Zbb_Sscofpmf` + H (TRM), Sv48 (TRM, DTB).
 | Address translation | Sv39, Sv48; hgatp Sv39x4, Sv48x4 | confirmed | TRM satp/hgatp tables; DTB `mmu-type` |
 | mtvec alignment | Direct 4 B, Vectored 256 B | confirmed | TRM Table 3-46 |
 | stvec alignment | Vectored 128 B | confirmed | TRM Table 3-58 |
-| medeleg writable | `0xF0B7FF` | confirmed | TRM Table 3-52; OpenSBI read-back `0xF0B509` is a subset |
+| medeleg writable | `0xF0B55D` | confirmed | csr_probe 2026-10-05 (`medeleg <- ~0`); TRM Table 3-52 lists `0xF0B7FF`, but access faults 1/5/7 are not delegatable on the board |
 | mideleg writable | `0x2222` in Sail | partial | TRM Table 3-51 lists `0x3666`; Sail's ratified-H model fixes the VS/SGEI bits itself and rejects them here |
 | HPM counters | mhpmcounter3-6 | confirmed | OpenSBI "MHPM Info 4 (0x00000078)" |
 | Misaligned load/store | traps (software emulation) | confirmed | TRM 3.4 mcause note |
@@ -50,13 +50,13 @@ board), `RV64GC_Zba_Zbb_Sscofpmf` + H (TRM), Sv48 (TRM, DTB).
 | PLIC | `0x0C000000`, 520 sources, hart1 M ctx 2, S ctx 3 | confirmed | DTB `interrupts-extended`; TRM |
 | UART0 | `0x50900000`, shift 2, 32-bit access, PLIC source 100 | confirmed | DTB (U-Boot's DTS says 16-bit; both work for TX) |
 | Cycles per timer tick | 2048 bound | derived | 1.8 GHz max (Milk-V) / 1 MHz mtime |
-| mvendorid / marchid / mimpid | U74 values kept | **UNVERIFIED** | not in TRM; read on hardware |
-| HPM counter width | 40 | **UNVERIFIED** | OpenSBI measures but does not print it |
-| time CSR implemented | false | **UNVERIFIED** | TRM lists the CSR; may trap to M-mode |
+| mvendorid / marchid / mimpid | `0x489` / `0x8000000000000008` / `0x6220425` | confirmed | csr_probe 2026-10-05 |
+| HPM counter width | 48 | confirmed | csr_probe 2026-10-05 (`mhpmcounter3 <- ~0`) |
+| time CSR implemented | false | confirmed | csr_probe 2026-10-05: `rdtime` raises illegal instruction |
 | LR/SC reservation, misaligned fault priority, xtval reporting, WFI | U74 values | **UNVERIFIED** | probe on hardware |
-| VMID width | 14 (field size) | **UNVERIFIED** | TRM hgatp field is 14 bits; implemented width unknown |
+| VMID width | 0 | confirmed | csr_probe 2026-10-05: no writable hgatp.VMID bits |
 | Sscounterenw, Sstvecd | enabled | **UNVERIFIED** (Sstvecd consistent with TRM) | |
-| RVMODEL_ACCESS_FAULT_ADDRESS | `0x0` | **UNVERIFIED** | confirm address 0 faults on Megrez |
+| RVMODEL_ACCESS_FAULT_ADDRESS | `0x0` | confirmed | csr_probe 2026-10-05: load from `0x0` raises load access fault |
 
 ## Hypervisor
 
@@ -74,4 +74,4 @@ ACT `hypervisor` branch and a decision on 0.6-vs-1.0 differences.
   generated `InterruptsSm,InterruptsS,ExceptionsSm,Sm,S,U,ZicntrSm,Sstvecd,Sscounterenw`
   (410 steps) all succeeded; 162 hardware ELFs load and enter inside
   `0x90000000`-`0xB0000000`.
-- Not yet run on Megrez hardware.
+- Hardware: Jenkins megrez-uart-sanity #3 (2026-10-05) failed 6/8 on access-fault delegation with medeleg `0xF0B7FF`; csr_probe measured `0xF0B55D`, applied here.
