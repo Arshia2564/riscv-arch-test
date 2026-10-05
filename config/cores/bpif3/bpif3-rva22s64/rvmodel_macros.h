@@ -104,7 +104,9 @@ tohost:                                  \
 
 #define RVMODEL_ACCESS_FAULT_ADDRESS 0x00000000
 
-#define RVMODEL_MTIMECMP_ADDRESS _k1_mtimecmp
+// The K1 CLINT is ~3.5 GiB from the test image: ACT must load CLINT addresses absolutely.
+#define RVMODEL_CLINT_ABSOLUTE 1
+#define RVMODEL_MTIMECMP_ADDRESS K1_MTIMECMP_ADDRESS
 
 #define RVMODEL_LOAD_MTIMECMP_ADDR(_REG) LOAD_ADDR32(_REG, K1_MTIMECMP_ADDRESS)
 
