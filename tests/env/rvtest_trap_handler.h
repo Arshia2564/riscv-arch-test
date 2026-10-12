@@ -1177,10 +1177,14 @@ init_\__MODE__\()scratch:
         SREG    T3, xscr_save_off(T1)   // save old mscratch in xscratch_save
 //----------------------------------------------------------------------
 
-#ifdef RVMODEL_MTIMECMP_ADDRESS            // this looks a bit odd to keep it constant size
-init_\__MODE__\()timecmp:               // init MTIMECMP to largest value if its address is defined
+#ifdef RVMODEL_MTIMECMP_ADDRESS
+init_\__MODE__\()timecmp:
         LI(  T2,  -1)
+  #ifdef RVMODEL_LOAD_MTIMECMP_ADDR
+        RVMODEL_LOAD_MTIMECMP_ADDR(T4)
+  #else
         LI(  T4,  RVMODEL_MTIMECMP_ADDRESS)
+  #endif
         SREG T2,  0(T4)
   .if (UDB_MXLEN==32)
         SREG T2,  4(T4)
